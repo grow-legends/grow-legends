@@ -9257,10 +9257,14 @@ window.addEventListener("pagehide", () => { if (STATE) { ONLINE.dirty = true; on
 document.addEventListener("visibilitychange", () => { if (document.hidden && STATE) { ONLINE.dirty = true; onlinePush(); } });
 
 /* ---------------------------- MENÜ: KONTO ---------------------------- */
+const ADMIN_NAME = "admin";
+const isAdmin = () => (ONLINE.name || "").toLowerCase() === ADMIN_NAME;
 const _openMainMenuOnline = openMainMenu;
 openMainMenu = function () {
   _openMainMenuOnline();
   const m = GAME.menus[GAME.menus.length - 1];
+  // Schummel-Schalter nur für das Konto „admin“
+  if (!isAdmin()) m.items = m.items.filter(it => it.id !== "debug");
   const i = m.items.findIndex(it => it.id === "save");
   if (i >= 0) m.items.splice(i + 1, 0, { label: "Konto", id: "account" });
   const orig = m.onChoose;
