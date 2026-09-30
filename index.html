@@ -2485,6 +2485,8 @@ const fmtPct = f => (f >= 0 ? "+" : "-") + Math.round(Math.abs(f) * 100) + " %";
 function plantDryShare(pl) { return 1 - plantCare(pl); }        // Wassermangel: 0 … 1
 const DRY_Q_PER_10 = 4;
 const REG_YIELD_BONUS = 1.25;                                     // reguläre Samen: +25 % Ertrag                                           // Qualitätsabzug pro 10 % Wassermangel
+// Männchen/besprühte Pflanzen bleiben im Pollen-Stadium stehen (Mitte der Blüte), bis man sie entfernt
+function plantGrowCapMs(pl) { return plantTotalMs(pl) * (isPollenPlant(pl) && !pl.owner && pl.growMs <= plantTotalMs(pl) * POLLEN_FROM + 1 ? POLLEN_FROM : 1); }
 function plantRemainingMin(pl, tent) { return Math.ceil((plantTotalMs(pl) - pl.growMs) / plantSpeed(pl, tent) / 60000); }
 
 // Rechnet eine Pflanze bis "jetzt" weiter (auch nach Stunden offline)
@@ -2493,7 +2495,7 @@ function simulatePlant(pl, t, tent) {
   if (!dt) return;
   const auto = !!tentAddon(tent, "water");
   const drain = 100 / (WATER_EMPTY_MIN * 60000);          // Wasser-Verlust pro ms
-  const total = plantTotalMs(pl), speed = plantSpeed(pl, tent);
+  const total = plantGrowCapMs(pl), speed = plantSpeed(pl, tent);
   const wet = auto ? dt : Math.min(dt, pl.water / drain);   // so lange war noch Wasser da
   if (pl.growMs < total) {
     // Die Pflanze wächst immer weiter – gezählt wird nur, wie lange sie dabei Wassermangel hatte
@@ -2528,8 +2530,9 @@ function useSts() {
 }
 function checkPollination(tent) {
   // Pollen-Spender: echte Männchen – oder mit Silberthiosulfat besprühte Weibchen (-> feminisierte Samen)
-  if (tent.pollenHold) return;          // nach Schlafen/Fernsehen: erst, wenn man das Zelt angeschaut hat
-  const blooming = tent.plants.filter(p => p && isPollenPlant(p) && plantProgress(p) >= POLLEN_FROM);
+  // Nach Schlafen/Fernsehen: echte Männchen bestäuben erst, wenn man das Zelt angeschaut hat.
+  // Besprühte Pflanzen (Silberthiosulfat) sind immer gewollt – die bestäuben sofort.
+  const blooming = tent.plants.filter(p => p && isPollenPlant(p) && plantProgress(p) >= POLLEN_FROM && (!tent.pollenHold || p.sts));
   const father = blooming.find(p => p.sex === "m") || blooming[0];
   if (!father) return;
   for (const p of tent.plants) if (p && !isPollenPlant(p) && !p.owner && !p.pollen && plantStage(p) >= BLOOM_STAGE) { p.pollen = father.strain; p.pollenFem = father.sex !== "m"; saveGame(); }
@@ -2590,6 +2593,7 @@ function harvestBud(tent, slot) {
 function harvestPlant(tent, slot) {
   const pl = tent.plants[slot];
   if (isPollenPlant(pl)) { tent.plants[slot] = null; saveGame(); return { bud: null, seeds: null, male: true, sts: !!pl.sts }; }
+  delete tent.pollenHold;               // wer erntet, beendet die Schonfrist (Männchen hätte man vorher entfernen können)
   checkPollination(tent);
   const father = pl.pollen ? { strain: pl.pollen } : null, fem = !!pl.pollenFem;
   const pollinated = father && !pl.owner;
@@ -2609,6 +2613,13 @@ function harvestPlant(tent, slot) {
     seeds = { n, isNew, strain: child, fem };
   }
   return { bud, seeds, male: false };
+}
+// Hinweis: Eine Pollen-Pflanze im Zelt gibt noch keine Pollen ab -> jetzt ernten = Blüten statt Samen
+function pollenPendingNote(tent, pl) {
+  if (!pl || pl.owner || pl.pollen || isPollenPlant(pl)) return "";
+  const d = tent.plants.find(p => p && !p.owner && isPollenPlant(p) && plantProgress(p) < POLLEN_FROM);
+  if (!d) return "";
+  return `\nAchtung: ${STRAINS[d.strain].name} (${d.sts ? "besprüht" : "♂"}) gibt erst in ca. ${minutesUntilPollen(d, tent)} min Pollen ab. Erntest du jetzt, bekommst du Blüten statt Samen.`;
 }
 function harvestText(res) {
   if (res.male) return res.sts ? "Die besprühte Pflanze hat Pollen statt Blüten gebildet. Du hast sie entfernt." : "Eine männliche Pflanze trägt keine Blüten. Du hast sie entfernt.";
@@ -2780,7 +2791,7 @@ function openSlotActions(slot) {
     const male = isPollenPlant(pl);
     const ripe = tent.plants.filter(p => p && plantStage(p) === 5).length;
     const opts = [male ? "Entfernen" : "Ernten", ...(ripe > 1 ? [`Alle erntereifen ernten (${ripe})`] : []), "Abbrechen"];
-    openDialog(male ? `${STRAINS[pl.strain].name} ♂ ${pl.sts ? "wurde besprüht" : "ist männlich"} und trägt keine Blüten. Entfernen?` : `${STRAINS[pl.strain].name} ist erntereif. Jetzt ernten?`, opts, c => {
+    openDialog(male ? `${STRAINS[pl.strain].name} ♂ ${pl.sts ? "wurde besprüht" : "ist männlich"} und trägt keine Blüten. Entfernen?` : `${STRAINS[pl.strain].name} ist erntereif. Jetzt ernten?` + pollenPendingNote(tent, pl), opts, c => {
       if (ripe > 1 && c === 1) { harvestAll(tent); return; }
       if (c !== 0) return;
       const res = harvestPlant(tent, slot);
@@ -2797,6 +2808,8 @@ function openSlotActions(slot) {
   const fertPhase = stage >= 2 && stage <= 3 ? "fertVeg" : stage === 4 ? "fertBloom" : null;
   items.push({ label: "Düngen", id: "fert", disabled: !fertPhase || !!pl[fertPhase] || !invOf("fert").length });
   if (!pl.owner && !pl.sts && stage < BLOOM_STAGE) items.push({ label: "Besprühen (Silberthiosulfat)", id: "sts", disabled: stsAvailable() < 1 });
+  if (!pl.owner && isPollenPlant(pl) && plantProgress(pl) >= POLLEN_FROM - 1e-6) items.push({ label: pl.pollenTaken ? "Pollen gesammelt" : "Pollen sammeln", id: "pollenTake", disabled: !!pl.pollenTaken });
+  if (!pl.owner && !isPollenPlant(pl) && !pl.pollen && stage === BLOOM_STAGE) items.push({ label: "Bestäuben (Pollen)", id: "pollenUse", disabled: !invOf("pollen").length });
   items.push({ label: "Info", id: "info" });
   items.push({ label: "Entfernen", id: "remove" });
   openMenu({
@@ -2829,6 +2842,10 @@ function openSlotActions(slot) {
           pl.sts = true; saveGame();
           openDialog(`Du hast ${STRAINS[pl.strain].name} besprüht. Sie wird jetzt männlich und bildet Pollen.\nAlle weiblichen Pflanzen, die gleichzeitig im Zelt blühen, bekommen feminisierte Samen.\nNoch ${left} Anwendung${left === 1 ? "" : "en"}.`);
         });
+      } else if (it.id === "pollenTake") {
+        pollenTake(pl);
+      } else if (it.id === "pollenUse") {
+        pollenUse(tent, pl);
       } else if (it.id === "info") {
         openDialog(plantInfo(pl, tent));
       } else if (it.id === "remove") {
@@ -2882,9 +2899,9 @@ function harvestAll(tent) {
 function plantInfo(pl, tent) {
   const st = STAGES[plantStage(pl)].name, pct = Math.floor(plantProgress(pl) * 100);
   const fv = pl.fertVeg ? ITEMS[pl.fertVeg].name : "–", fb = pl.fertBloom ? ITEMS[pl.fertBloom].name : "–";
-  const sx = (pl.sts ? " · besprüht (bildet Pollen) ♂" : plantStage(pl) >= SEX_VISIBLE_STAGE ? (pl.sex === "m" ? " · männlich ♂" : " · weiblich ♀") : " · Geschlecht noch unbekannt") + (pl.pollen ? (pl.pollenFem ? " · bestäubt (fem.)" : " · bestäubt") : "");
+  const sx = (isPollenPlant(pl) && plantProgress(pl) >= POLLEN_FROM - 1e-6 && !pl.owner ? (pl.sts ? " · besprüht ♂" : " · männlich ♂") + " · gibt Pollen ab" + (pl.pollenTaken ? " (gesammelt)" : "") : pl.sts ? " · besprüht (bildet Pollen) ♂" : plantStage(pl) >= SEX_VISIBLE_STAGE ? (pl.sex === "m" ? " · männlich ♂" : " · weiblich ♀") : " · Geschlecht noch unbekannt") + (pl.pollen ? (pl.pollenFem ? " · bestäubt (fem.)" : " · bestäubt") : "");
   return `${STRAINS[pl.strain].name} · ${st} · ${pct} %${pl.owner ? "" : sx}\n` +
-    (plantStage(pl) === 5 ? "Erntereif!" : `Noch ca. ${plantRemainingMin(pl, tent)} min bis zur Ernte.`) + (pl.water <= 0 ? " Die Erde ist trocken – gießen!" : "") + "\n" +
+    (plantStage(pl) === 5 ? "Erntereif!" : isPollenPlant(pl) && !pl.owner ? (plantProgress(pl) >= POLLEN_FROM - 1e-6 ? "Bleibt stehen, bis du sie entfernst." : `Gibt in ca. ${minutesUntilPollen(pl, tent)} min Pollen ab.`) : `Noch ca. ${plantRemainingMin(pl, tent)} min bis zur Ernte.`) + (pl.water <= 0 ? " Die Erde ist trocken – gießen!" : "") + "\n" +
     `Wasser ${Math.round(pl.water)} % · Wassermangel: ${Math.round(plantDryShare(pl) * 100)} %\n` +
     `Ertrag durch Gießen: ${fmtPct(yieldWaterFactor(plantDryShare(pl)) - 1)}` + (plantDryShare(pl) > 0 ? ` · Qualität -${Math.round(plantDryShare(pl) * 10 * DRY_Q_PER_10)}` : "") + "\n" +
     `Substrat: ${ITEMS[pl.soil].name}\nDünger: ${fv} / ${fb}` + (pl.reg ? "\nReguläre Samen: +25 % Ertrag" : "");
@@ -3397,7 +3414,7 @@ function buyAddon(id, tent, after) {
 function sellItems() {
   const items = [];
   for (const cat of Object.keys(CAT_LABELS)) for (const id of invOf(cat)) {
-    if (cat === "key") continue;                 // Schlüssel kann man nicht verkaufen
+    if (cat === "key" || cat === "pollen") continue;   // Schlüssel und Pollen kann man nicht verkaufen
     const p = Math.floor(ITEMS[id].price / 2);
     items.push({ label: ITEMS[id].name + " ×" + invCount(id), right: euro(p), desc: `Rückkauf zum halben Preis: ${euro(p)} pro Stück.`, id, price: p });
   }
@@ -9028,7 +9045,7 @@ const TV_MAX_H = 12;
 // Pflanzen, die Pollen abgeben und Weibchen, die bestäubt würden
 function pollenDanger(tent) {
   const own = tent.plants.filter(p => p && !p.owner);
-  return own.some(p => isPollenPlant(p) && plantProgress(p) >= POLLEN_FROM) && own.some(p => !isPollenPlant(p) && !p.pollen && plantStage(p) >= BLOOM_STAGE);
+  return own.some(p => p.sex === "m" && !p.sts && plantProgress(p) >= POLLEN_FROM) && own.some(p => !isPollenPlant(p) && !p.pollen && plantStage(p) >= BLOOM_STAGE);
 }
 function skipGameTime(skipMin, wakeText) {
   const skipMs = skipMin / GAME_MIN_PER_REAL_SEC * 1000;
@@ -9038,10 +9055,10 @@ function skipGameTime(skipMin, wakeText) {
       let danger = false;
       for (const tent of STATE.tents) {
         // Schonfrist: bis man das Zelt angeschaut hat, wird nicht bestäubt
-        if (tent.plants.some(p => p && !p.owner && isPollenPlant(p))) tent.pollenHold = true;
+        if (tent.plants.some(p => p && !p.owner && p.sex === "m" && !p.sts)) tent.pollenHold = true;   // nur echte Männchen – Silberthiosulfat ist gewollt
         for (const pl of tent.plants) if (pl) {
           // Pflanzen wachsen mit – ohne Wassermangel – und sind danach durstig
-          const total = plantTotalMs(pl), speed = plantSpeed(pl, tent);
+          const total = plantGrowCapMs(pl), speed = plantSpeed(pl, tent);
           const used = Math.min(skipMs, Math.max(0, (total - pl.growMs) / speed));
           pl.growMs = Math.min(total, pl.growMs + used * speed);
           pl.wetMs += used;
@@ -9067,7 +9084,7 @@ const _openTentTS = openTent;
 openTent = function (tent) {
   _openTentTS(tent);
   if (tent.pollenHold && pollenDanger(tent))
-    openDialog("Achtung: Die männlichen Pflanzen (♂) geben Pollen ab!\nEntferne sie jetzt – sobald du das Zelt verlässt, werden sonst die blühenden Weibchen bestäubt.");
+    openDialog("Achtung: Die männlichen Pflanzen (♂) geben Pollen ab!\nEntferne sie jetzt – sobald du erntest oder das Zelt verlässt, werden sonst die blühenden Weibchen bestäubt.");
 };
 const _closeTentTS = closeTent;
 closeTent = function () {
@@ -9098,6 +9115,55 @@ CUSTOM_INTERACTIONS.tvWait = () => {
     },
   });
 };
+/* =====================================================================
+   34. POLLEN SAMMELN & VON HAND BESTÄUBEN
+   ---------------------------------------------------------------------
+   Männchen und besprühte Pflanzen bleiben im Pollen-Stadium stehen (Mitte
+   der Blüte), bis man sie entfernt. Dann kann man einmal pro Pflanze
+   „Pollen sammeln“: 10 Portionen „Pollen: <Sorte>“ (besprühte Pflanze →
+   „(fem.)“, ergibt feminisierte Samen). Pollen bleiben in der Tasche und
+   verderben nicht. Jede blühende weibliche Pflanze (egal welches Zelt,
+   egal wann) kann man damit bestäuben – 1 Portion pro Pflanze.
+   ===================================================================== */
+const POLLEN_PORTIONS = 10;
+CAT_LABELS.pollen = "Pollen";
+for (const k of Object.keys(STRAINS)) {
+  const n = STRAINS[k].name;
+  ITEMS["pollen_" + k] = { cat: "pollen", name: "Pollen: " + n, price: 0, strain: k, fem: false, desc: `Pollen eines ${n}-Männchens. Bestäubt eine blühende Pflanze → reguläre Samen.` };
+  ITEMS["pollen_" + k + "_f"] = { cat: "pollen", name: "Pollen: " + n + " (fem.)", price: 0, strain: k, fem: true, desc: `Pollen einer besprühten ${n}. Bestäubt eine blühende Pflanze → feminisierte Samen.` };
+}
+function pollenTake(pl) {
+  const id = "pollen_" + pl.strain + (pl.sts ? "_f" : "");
+  pl.pollenTaken = true; invAdd(id, POLLEN_PORTIONS); saveGame(); Sound.select();
+  openDialog(`Du hast Pollen gesammelt: ${POLLEN_PORTIONS}× ${ITEMS[id].name}.\nDamit kannst du jede blühende weibliche Pflanze bestäuben – auch in anderen Zelten und später.`);
+}
+function pollenApply(pl, id) {
+  pl.pollen = ITEMS[id].strain; pl.pollenFem = ITEMS[id].fem; invAdd(id, -1);
+}
+function pollenUse(tent, pl) {
+  openMenu({
+    title: "POLLEN WÄHLEN",
+    items: invOf("pollen").map(id => ({ label: ITEMS[id].name, right: "×" + invCount(id), id })),
+    onChoose(it) {
+      const others = tent.plants.filter(p => p && p !== pl && !p.owner && !isPollenPlant(p) && !p.pollen && plantStage(p) === BLOOM_STAGE);
+      const doOne = () => {
+        pollenApply(pl, it.id); saveGame(); Sound.select(); closeAllMenus();
+        openDialog(`Du hast ${STRAINS[pl.strain].name} mit ${ITEMS[it.id].name} bestäubt.\nBei der Ernte bekommst du ${ITEMS[it.id].fem ? "feminisierte" : "reguläre"} Samen statt Blüten.`);
+      };
+      if (!others.length || invCount(it.id) < 2) { doOne(); return; }
+      const n = Math.min(invCount(it.id), others.length + 1);
+      openDialog(`Nur diese Pflanze bestäuben oder alle ${others.length + 1} blühenden Weibchen im Zelt?`, ["Nur diese", `Alle (${n})`, "Abbrechen"], c => {
+        if (c === 0) doOne();
+        else if (c === 1) {
+          let done = 0;
+          for (const p of [pl, ...others]) { if (invCount(it.id) < 1) break; pollenApply(p, it.id); done++; }
+          saveGame(); Sound.select(); closeAllMenus();
+          openDialog(`Du hast ${done} Pflanzen mit ${ITEMS[it.id].name} bestäubt.\nBei der Ernte bekommst du ${ITEMS[it.id].fem ? "feminisierte" : "reguläre"} Samen statt Blüten.`);
+        }
+      });
+    },
+  });
+}
 
 /* ---------------------------------------------------------------------
    START
