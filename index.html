@@ -9056,6 +9056,7 @@ function renderDexDetail(sc) {
    Fernseher: 1–12 Stunden, nur in den eigenen Wohnungen/Immobilien.
    ===================================================================== */
 const TV_MAX_H = 12;
+const TV_COOLDOWN_MS = 3 * 60 * 60 * 1000;     // einmal alle 3 echten Stunden
 // Pflanzen, die Pollen abgeben und Weibchen, die bestäubt würden
 function pollenDanger(tent) {
   const own = tent.plants.filter(p => p && !p.owner);
@@ -9118,11 +9119,19 @@ buildMap = function (id) {
 CUSTOM_INTERACTIONS.tvWait = () => {
   Sound.select();
   if (!isHomeMap(GAME.mapId)) { openDialog("Im Fernsehen läuft gerade nichts Spannendes."); return; }
+  // Nur einmal alle 3 echten Stunden (fair auch online)
+  const waitMs = (STATE.tvLastReal || 0) + TV_COOLDOWN_MS - Date.now();
+  if (waitMs > 0) {
+    const m = Math.ceil(waitMs / 60000), h = Math.floor(m / 60);
+    openDialog(`Du hast vorhin schon ferngesehen. Der Fernseher geht erst wieder in ${h ? h + " Std. " : ""}${m % 60} Min.\n(einmal alle 3 Stunden, echte Zeit)`);
+    return;
+  }
   openMenu({
     title: "FERNSEHEN – WIE LANGE?",
     items: Array.from({ length: TV_MAX_H }, (_, i) => ({ label: `${i + 1} ${i ? "Stunden" : "Stunde"}`, right: "bis " + clockAt(gameMinuteOfDay() + (i + 1) * 60), h: i + 1 })),
     onChoose(it) {
       closeAllMenus();
+      STATE.tvLastReal = Date.now(); saveGame();
       const end = clockAt(gameMinuteOfDay() + it.h * 60);
       skipGameTime(it.h * 60, `Du hast ${it.h} ${it.h > 1 ? "Stunden" : "Stunde"} ferngesehen. Es ist jetzt ${end} Uhr.\nDeine Pflanzen sind gewachsen – und haben Durst.`);
       Sound.tone(523, 0.2, "square", 0.03); Sound.tone(392, 0.3, "square", 0.03, 0.2);
