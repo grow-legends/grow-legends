@@ -4122,7 +4122,7 @@ MAPS.outside = {
    Die Tür ist abgeschlossen, bis STATE.flags.bruder_offen gesetzt ist
    (später durch die Story, zum Testen über Menü → Test-Schalter).
    ===================================================================== */
-const DEBUG_SWITCHES = true;   // Test-Schalter im Menü anzeigen (später auf false)
+const DEBUG_SWITCHES = false;  // Test-Schalter im Menü entfernt (Nutzer, 06.10.)
 
 function flag(name) { return !!(STATE.flags && STATE.flags[name]); }
 function setFlag(name, v = true) { if (!STATE.flags) STATE.flags = {}; STATE.flags[name] = v; saveGame(); }
@@ -4366,7 +4366,7 @@ MAPS.brother_up = {
     // links: Technik
     { type: "controlPanel", x: 1, y: 3, interact: { kind: "dialog", face: "left", hint: "Steuerung", text: "Die Steuerung für Licht, Lüftung und Bewässerung. Alles läuft automatisch." } },
     { type: "waterTank", x: 1, y: 6, interact: { kind: "dialog", face: "left", hint: "Wassertank", text: "Ein großer Wassertank für die automatische Bewässerung." } },
-    { type: "plant", x: 1, y: 10 },
+    // keine Deko-Pflanze im Grow-Raum (Hygiene)
     // Mitte: 4 Pflanzenreihen à 10, dazwischen Laufwege
     ...[0, 1, 2, 3].map(i => ({ type: "brotherBed", x: 3, y: 3 + i * 2, row: i, interact: { kind: "brotherGrow", hint: `Reihe ${i + 1} ansehen` } })),
     // rechts: Arbeitsplatz
@@ -6162,7 +6162,7 @@ MAPS.jacksonville = {
     { type: "parkSign", x: 20, y: 32 },
     { type: "busStop", x: 16, y: 34, interact: { kind: "dialog", face: "up", hint: "Fahrplan", text: "Bushaltestelle Jacksonville.\nDer Bus fährt heute nicht." } },
     { type: "townSign", x: 7, y: 34, interact: { kind: "dialog", face: "up", hint: "Lesen", text: "Willkommen in Jacksonville!\nDie kleine Studentenstadt am See." } },
-    { type: "lamp", x: 8, y: 29 }, { type: "lamp", x: 21, y: 29 },
+    { type: "lamp", x: 7, y: 29 }, { type: "lamp", x: 21, y: 29 },
 
     // ---------- Spielhalle + Parkplatz ----------
     { type: "arcade", x: 44, y: 18 }, jaxDoor(49, 21, 2, "Spielhalle"),
@@ -6295,7 +6295,7 @@ Object.assign(OBJECT_TYPES, {
       // Rückwand: Samenbank, Neon-Schild, Lampen
       { type: "seedWall", x: 1, y: 1, interact: { kind: "dialog", face: "up", hint: "Ansehen", text: "Eine ganze Wand voller Samenpäckchen – Sorten aus aller Welt." } },
       { type: "neonSign", x: 7, y: 1 },
-      { type: "lampDisplay", x: 12, y: 1, interact: { kind: "dialog", face: "up", hint: "Ansehen", text: "Verschiedene Growlampen zum Ausprobieren: Natriumdampf, Vollspektrum-LED und Keramik." } },
+      { type: "lampDisplay", x: 12, y: 1, h: 2, interact: { kind: "dialog", face: "up", hint: "Ansehen", text: "Verschiedene Growlampen zum Ausprobieren: Natriumdampf, Vollspektrum-LED und Keramik." } },
       { type: "aptDoor", x: 16, y: 2, interact: { kind: "dialog", face: "up", hint: "Tür", text: "Lager – nur für Mitarbeiter." } },
       // Theke mit Verkäufer
       { type: "shopCounter", x: 7, y: 5, interact: { kind: "shop2", face: "up", hint: "Einkaufen" } },
@@ -6454,7 +6454,7 @@ const GROW_TECH = [
   { type: "duct", x: 1, y: 1, w: 5 }, { type: "duct", x: 9, y: 1, w: 3 }, { type: "hallWindow", x: 5, y: 1 }, { type: "exhaustFan", x: 12, y: 1 },
   { type: "controlPanel", x: 1, y: 3, interact: { kind: "dialog", face: "left", hint: "Steuerung", text: "Die Steuerung für Licht, Lüftung und Bewässerung. Alles läuft automatisch." } },
   { type: "waterTank", x: 1, y: 6, interact: { kind: "dialog", face: "left", hint: "Wassertank", text: "Ein großer Wassertank für die automatische Bewässerung." } },
-  { type: "plant", x: 1, y: 10 },
+  // keine Deko-Pflanzen im Grow-Raum (Hygiene)
 ];
 const EMPTY_ROOM_SIGN = (x, y) => ({ type: "sign", x, y, interact: { kind: "dialog", hint: "Lesen", text: `Dieser Raum kann zum Grow-Raum ausgebaut werden.\nAusbau: ${euro(GROWROOM_COST)} im Immobilien-Büro (Jacksonville).` } });
 MAPS.nb_down = {
@@ -8490,7 +8490,7 @@ MAPS.college_eg = {
     // Toiletten
     { type: "toilet", x: 24, y: 9 }, { type: "toilet", x: 26, y: 9 }, { type: "bathSink", x: 27, y: 11 },
     // Uwes Zimmer (Hausmeisterei)
-    { type: "workbench", x: 29, y: 9 }, { type: "locker", x: 34, y: 9 }, { type: "toolbox", x: 34, y: 11 }, { type: "ladder", x: 29, y: 11 },
+    { type: "workbench", x: 32, y: 9 }, { type: "locker", x: 29, y: 9 }, { type: "toolbox", x: 34, y: 11 }, { type: "ladder", x: 29, y: 11 },
     // Klassenzimmer 3
     { type: "roomSign", x: 32, y: 18, text: "KZ 3" }, { type: "roomSign", x: 23, y: 12, text: "WC", color: "#2a4a78" }, { type: "roomSign", x: 31, y: 12, text: "HAUSMEISTER", color: "#6a4028" }, ...classroom(23, 13, 12, [15, 16], 25),
     // Lehrerzimmer
@@ -8593,10 +8593,10 @@ MAPS.andi = {
   tiles: ANDI_TILES, collision: colColl(ANDI_TILES),
   spawns: { entrance: { x: 6, y: 9, dir: "up" } },
   objects: [
-    { type: "pegboard", x: 1, y: 1, interact: { kind: "dialog", face: "up", hint: "Werkzeug", text: "Fein säuberlich sortiertes Werkzeug. Andi ist ein ordentlicher Mann." } },
+    { type: "pegboard", x: 1, y: 1 },
     { type: "keyBox", x: 5, y: 1, interact: { kind: "dialog", face: "up", hint: "Schlüssel", text: "Der Schlüsselkasten des Hauses. Alle Haken sind beschriftet." } },
     { type: "workJacket", x: 7, y: 1 },
-    { type: "workbench", x: 1, y: 2 }, { type: "toolbox", x: 4, y: 2 }, { type: "ladder", x: 7, y: 2 }, { type: "paintCans", x: 7, y: 4 },
+    { type: "workbench", x: 1, y: 2, interact: { kind: "dialog", face: "up", hint: "Werkzeug", text: "Werkbank und Lochwand – fein säuberlich sortiertes Werkzeug. Andi ist ein ordentlicher Mann." } }, { type: "toolbox", x: 4, y: 2 }, { type: "ladder", x: 7, y: 2 }, { type: "paintCans", x: 7, y: 4 },
     { type: "sofa", x: 2, y: 6 }, { type: "coffeeTable", x: 4, y: 7 }, { type: "tv", x: 6, y: 6 },
     { type: "bed", x: 10, y: 6 }, { type: "fridge", x: 1, y: 8 }, { type: "plant", x: 12, y: 9 },
     { type: "shower", x: 9, y: 2 }, { type: "bathSink", x: 11, y: 2 }, { type: "toilet", x: 12, y: 3 },
