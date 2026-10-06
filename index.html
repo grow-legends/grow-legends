@@ -1997,8 +1997,16 @@ function toggleMute() {
 let last = 0;
 function loop(ts) {
   const dt = Math.min(0.05, (ts - last) / 1000 || 0); last = ts;
-  update(dt);
-  render();
+  // Ein Fehler darf das Spiel nie einfrieren: abfangen, melden, weiterlaufen
+  try { update(dt); render(); }
+  catch (e) {
+    console.error(e);
+    const msg = (e && e.message) || String(e);
+    if (!GAME.lastError || GAME.lastError.msg !== msg || ts - GAME.lastError.t > 5000) {
+      GAME.lastError = { msg, t: ts, where: (e && e.stack || "").split("\n").slice(0, 3).join(" | ") };
+      try { GAME.dialog = null; GAME.menus.length = 0; showBanner("Fehler: " + msg.slice(0, 60)); } catch (e2) { }
+    }
+  }
   Input.endFrame();
   requestAnimationFrame(loop);
 }
@@ -2578,6 +2586,10 @@ function harvestBud(tent, slot) {
   const bud = { id: STATE.nextBudId++, strain: pl.strain, rarity: r, quality: q, strength, grams, value: Math.round(perGram * grams * 100) / 100, harvestedAt: now() };
   if (pl.fixed) Object.assign(bud, { quality: pl.fixed.quality, strength: pl.fixed.strength, grams: pl.fixed.grams, value: pl.fixed.grams * pl.fixed.perGram });
   if (pl.owner) bud.owner = pl.owner;                    // gehört jemand anderem (Bruder)
+  // THC + Terpene direkt beim Ernten festlegen (26_lab_dex.js), damit sie auch in Tasche/Schrank ankommen
+  if (pl.line && !pl.owner) bud.line = pl.line;                               // Linie (36. Stecklinge)
+  if (typeof budLabValues === "function") Object.assign(bud, budLabValues(bud.strain, bud.quality, true, bud.line));
+  if (bud.line && typeof lineOf === "function" && (lineOf(bud.line) || {}).tested) { bud.tested = true; bud.value = Math.round(bud.value * TESTED_BONUS * 100) / 100; }
   STATE.buds.push(bud);
   tent.plants[slot] = null;
   saveGame();
@@ -3324,7 +3336,7 @@ function buyFlow(id, after) {
   const it = ITEMS[id];
   // Add-ons werden in ein bestimmtes, aufgestelltes Zelt eingebaut
   if (it.cat === "addon") {
-    const tents = STATE.tents.filter(t => !t.install);          // feste Grow-Anlagen sind schon voll ausgestattet
+    const tents = STATE.tents.filter(t => !t.install && !(ITEMS[t.item] && ITEMS[t.item].clone));          // feste Grow-Anlagen sind schon voll ausgestattet
     if (!tents.length) { openDialog("Dafür brauchst du zuerst ein aufgestelltes Growzelt."); return; }
     if (tents.length === 1) { buyAddon(id, tents[0], after); return; }
     openMenu({
@@ -5302,7 +5314,7 @@ MAPS.apartment.objects = MAPS.apartment.objects.map(o => {
 /* ---------------------------- BLÜTEN: STAPELN, TASCHE, SCHRANK ---------------------------- */
 // Ist diese Karte ein eigenes Zuhause? (wird in 20_realestate.js für alle Immobilien erweitert)
 function isHomeMap(id) { return id === "apartment"; }
-const budKey = b => b.strain + "|" + b.quality + "|" + (b.owner || "");
+const budKey = b => b.strain + "|" + b.quality + "|" + (b.owner || "") + "|" + (b.line || "") + "|" + (b.tested ? 1 : 0);   // Linie + getestet (36.) trennen Stapel
 const sumG = list => list.reduce((s, b) => s + b.grams, 0);
 function stash() { if (!STATE.stash) STATE.stash = []; return STATE.stash; }
 const bagFree = () => Math.max(0, BAG_MAX_G - sumG(STATE.buds));
@@ -8657,7 +8669,7 @@ for (const k of STRAIN_LIST) {
   s.terp = TERP_OF[k] || (s.parents && STRAINS[s.parents[0]].terp) || "myrcen";
 }
 const labDone = () => !!(STATE && flag("lab_results"));
-const labPct = (v, d = 1) => v.toFixed(d).replace(".", ",") + " %";
+const labPct = (v, d = 1) => (typeof v === "number" && isFinite(v) ? v.toFixed(d).replace(".", ",") : "?") + " %";
 // Werte einer Blüte aus der Qualität (r = kleiner Zufall; bei alten Spielständen 0)
 function budLabValues(strain, q, r) {
   const s = STRAINS[strain], f = clamp(q, 0, 100) / 100;
@@ -8673,7 +8685,7 @@ function bestNote(b) {
 const _harvestBudLab = harvestBud;
 harvestBud = function (tent, slot) {
   const b = _harvestBudLab(tent, slot);
-  Object.assign(b, budLabValues(b.strain, b.quality, true));
+  if (b.thc == null) Object.assign(b, budLabValues(b.strain, b.quality, true));
   bestNote(b); saveGame();
   return b;
 };
@@ -8683,6 +8695,7 @@ loadGame = function () {
   if (STATE) {
     for (const b of [...STATE.buds, ...(STATE.stash || [])]) if (b.thc == null) { Object.assign(b, budLabValues(b.strain, b.quality, false)); bestNote(b); }
     if (questStep("handwerker") >= 3 && questStep("labor") < 0) STATE.quests.labor = 0;
+    for (const p of STATE.labSamples || []) if (typeof p.thc !== "number" || typeof p.terp !== "number") Object.assign(p, budLabValues(p.strain, 60, false));
   }
   return r;
 };
@@ -8745,7 +8758,7 @@ TALKS.natalie = () => {
   }
   if (s === 2) {
     if (gameDay() <= (STATE.labDay || 0)) { openDialog("Natalie: Die Analysen laufen noch. Komm morgen wieder, dann sind die Ergebnisse bereit."); return; }
-    const res = (STATE.labSamples || []).map(p => `${STRAINS[p.strain].name}: THC ${labPct(p.thc)} · Terpene ${labPct(p.terp, 2)} (${TERPENES[STRAINS[p.strain].terp].name})`);
+    const res = (STATE.labSamples || []).filter(p => STRAINS[p.strain]).map(p => `${STRAINS[p.strain].name}: THC ${labPct(p.thc)} · Terpene ${labPct(p.terp, 2)} (${(TERPENES[STRAINS[p.strain].terp] || { name: "?" }).name})`);
     openDialog(
       "Natalie: Da bist du ja! Die Ergebnisse sind fertig – schau mal:\n" + res.join("\n") + "\n" +
       "Natalie: THC ist der Wirkstoff – je höher, desto stärker. Terpene bestimmen Geruch und Geschmack.\n" +
@@ -8769,7 +8782,8 @@ function labChoose(parts) {
         const g = Math.round(Math.min(left, b.grams) * 10) / 10;
         pieces.push(takeFromList(STATE.buds, b, g)); left = Math.round((left - g) * 10) / 10;
       }
-      const g = sumG(pieces);
+      for (const x of pieces) if (x.thc == null || x.terp == null) Object.assign(x, budLabValues(x.strain, x.quality, false));
+      const g = sumG(pieces) || 1;
       parts.push({ strain: it.strain, pieces, thc: Math.round(pieces.reduce((n, x) => n + x.thc * x.grams, 0) / g * 10) / 10, terp: Math.round(pieces.reduce((n, x) => n + x.terp * x.grams, 0) / g * 100) / 100 });
       Sound.select();
       if (parts.length < LAB_SAMPLES) { labChoose(parts); return; }
@@ -8947,7 +8961,7 @@ function renderDexList(sc) {
   drawText(ctx, "A: Details  ◀▶: 10er  B: zurück", 4, VIEW_H - 10, "#606068", null);
 }
 function renderDexDetail(sc) {
-  const id = STRAIN_LIST[sc.pick], s = STRAINS[id], lab = labDone();
+  const id = STRAIN_LIST[sc.pick], s = STRAINS[id], lab = strainTested(id);
   px(ctx, DEX.grid, 0, 0, VIEW_W, VIEW_H);
   // Reiter
   px(ctx, DEX.blueDk, 0, 0, VIEW_W, 16); px(ctx, DEX.blue, 0, 0, VIEW_W, 14);
@@ -9005,7 +9019,7 @@ function renderDexDetail(sc) {
       }
       ly += rh;
     }
-    const note = !lab ? "THC und Terpene: erst nach einer Laboranalyse" : best ? `Deine beste: THC ${labPct(best.thc)} · Terp. ${labPct(best.terp, 2)}` : "Noch keine eigene Ernte";
+    const note = !lab ? "THC und Terpene: erst nach einem Labortest dieser Sorte" : best ? `Deine beste: THC ${labPct(best.thc)} · Terp. ${labPct(best.terp, 2)}` : "Noch keine eigene Ernte";
     if (ly + 9 <= bottom) drawText(ctx, clip(note, VIEW_W - 14), bxL + 2, ly + 1, "#606068", null);
   } else {
     // HERKUNFT: Eltern → Sorte
@@ -9379,6 +9393,675 @@ setInterval(async () => {
 }, 60000);
 
 // Wünsche von Stefanie/Marlon nur aus den 150 festen Sorten (eigene Zuchten kennt sonst keiner)
+/* =====================================================================
+   36. LINIEN (PHÄNOTYPEN), LABORTESTS & STECKLINGE
+   ---------------------------------------------------------------------
+   Linien: Jeder Samen ergibt eine eigene Linie mit festem Gen-Bonus
+     (THC ±2 %, Terpene ±0,2 %, immer innerhalb der Sorten-Grenzen).
+     Stecklinge gehören zur Linie ihrer Mutterpflanze.
+   Labortest (Natalie): Wird eine Blüte getestet, gilt die ganze Linie als
+     getestet – alle Blüten dieser Linie (auch künftige Ernten aus
+     Stecklingen) zeigen THC/Terpene und sind 5 % mehr wert. Im
+     Sortenverzeichnis werden THC, Terpene und Aroma der Sorte freigeschaltet.
+     Quest: 4 Proben gratis. Danach: 250 € + 5 g pro Test, Ergebnis am
+     nächsten Spieltag.
+   Stecklinge: Bewurzelungsgel (550 €, 25 Anwendungen, 1 pro Steckling).
+     Stecklingszelt (800 €, 50 Plätze): Stecklinge bleiben dort
+     Jungpflanzen, ohne Pflege. Von jeder Jungpflanze 5 Stecklinge alle
+     5 Spielstunden; schneidet man eine wachsende Pflanze im Zelt, wird
+     sie auf den Anfang der Jungpflanzen-Phase zurückgesetzt.
+     Umtopfen: leerer Platz im Zelt → „Steckling einpflanzen“ (mit Substrat).
+   ===================================================================== */
+const LINE_THC = 2, LINE_TERP = 0.2, TESTED_BONUS = 1.05, LAB_TEST_PRICE = 250;
+const CLONE_CAP = 50, CLONE_BATCH = 5, CLONE_COOLDOWN_MIN = 5 * 60, GEL_USES = 25;
+const JUNG = STAGES.findIndex(s => s.name === "Jungpflanze");     // 2
+
+ITEMS.root_gel = { cat: "spray", name: "Bewurzelungsgel", price: 550, uses: GEL_USES, desc: `Für Stecklinge: 1 Anwendung pro Steckling, ${GEL_USES} Anwendungen pro Dose.` };
+ITEMS.tent_clone = { cat: "tent", name: "Stecklingszelt", price: 800, slots: 0, w: 2, h: 2, clone: true, desc: `Für bis zu ${CLONE_CAP} Stecklinge. Sie bleiben darin Jungpflanzen – ohne Gießen.` };
+const SCALPEL_USES = 100;
+ITEMS.scalpel = { cat: "tool", name: "Skalpell", price: 350, uses: SCALPEL_USES, desc: `Zum Schneiden von Stecklingen: 1 Benutzung pro Steckling, ${SCALPEL_USES} Benutzungen.` };
+SHOP_CATALOG.splice(SHOP_CATALOG.findIndex(e => e.item === "sts") + 1, 0, { label: "Bewurzelungsgel", item: "root_gel" }, { label: "Skalpell", item: "scalpel" }, { label: "Stecklingszelt", item: "tent_clone" });
+const isCloneTent = t => !!(t && ITEMS[t.item] && ITEMS[t.item].clone);
+
+/* ---------------------------- LINIEN ---------------------------- */
+function lines() { return (STATE.lines = STATE.lines || {}); }
+function newLine(strain) {
+  STATE.lineCount = STATE.lineCount || {};
+  const n = STATE.lineCount[strain] = (STATE.lineCount[strain] || 0) + 1;
+  const id = "L" + (STATE.nextLineId = (STATE.nextLineId || 0) + 1);
+  lines()[id] = { strain, n, thcOff: Math.round(rnd(-LINE_THC, LINE_THC) * 10) / 10, terpOff: Math.round(rnd(-LINE_TERP, LINE_TERP) * 100) / 100, tested: false };
+  return id;
+}
+const lineOf = id => id && lines()[id];
+const lineName = id => { const l = lineOf(id); return l ? `Linie ${l.n}` : ""; };
+const strainTested = k => !!(STATE && STATE.testedStrains && STATE.testedStrains[k]);
+// neue Pflanze aus Samen = neue Linie
+const _plantSeedLC = plantSeed;
+plantSeed = function (tent, slot, seedId, soilId) { _plantSeedLC(tent, slot, seedId, soilId); const pl = tent.plants[slot]; if (pl) pl.line = newLine(pl.strain); saveGame(); };
+// Werte einer Blüte: Sorte + Qualität + Gen-Bonus der Linie
+const _budLabValuesLC = budLabValues;
+budLabValues = function (strain, q, r, lineId) {
+  const v = _budLabValuesLC(strain, q, r), l = lineOf(lineId), s = STRAINS[strain];
+  if (!l) return v;
+  return { thc: Math.round(clamp(v.thc + l.thcOff, THC_MIN, s.thcMax) * 10) / 10, terp: Math.round(clamp(v.terp + l.terpOff, TERP_MIN, s.terpMax) * 100) / 100 };
+};
+function markBud(x, lineId, v, tested) {
+  x.line = lineId; Object.assign(x, v);
+  if (tested && !x.tested) { x.tested = true; x.value = Math.round(x.value * TESTED_BONUS * 100) / 100; }
+}
+// Linie testen: alle Blüten dieser Linie sind getestet (+5 %), Sorte im Verzeichnis frei
+function testLine(lineId, strain) {
+  STATE.testedStrains = STATE.testedStrains || {};
+  STATE.testedStrains[strain] = true;
+  const l = lineOf(lineId);
+  if (l) l.tested = true;
+  for (const list of [STATE.buds, stash()]) for (const x of list) {
+    if (x.owner || x.tested) continue;
+    if (lineId ? x.line === lineId : (x.strain === strain && !x.line)) { x.tested = true; x.value = Math.round(x.value * TESTED_BONUS * 100) / 100; }
+  }
+  normalizeBuds();
+}
+// Blüten-Info: Werte nur bei getesteten Blüten
+budInfo = function (b) {
+  const s = STRAINS[b.strain], T = TERPENES[s.terp] || { name: "?", taste: "?" };
+  return `${s.name}${b.line ? " · " + lineName(b.line) : ""} · ${RARITIES[b.rarity].name}\n` +
+    `Qualität ${b.quality} · ` + (b.tested ? `THC ${labPct(b.thc)} · getestet (+5 %)\nTerpene ${labPct(b.terp, 2)} · ${T.name} (${T.taste})\n` : "THC ungetestet\n") +
+    `${fmtG(b.grams)} · Wert ${euro(b.value)} (${euro(b.value / b.grams)}/g)`;
+};
+// Pflanzen-Info: Linie anzeigen
+const _plantInfoLC = plantInfo;
+plantInfo = function (pl, tent) {
+  const t = _plantInfoLC(pl, tent), l = lineOf(pl.line);
+  if (!l) return t;
+  const [first, ...rest] = t.split("\n");
+  return [first + ` · ${lineName(pl.line)}${l.tested ? " (getestet)" : ""}`, ...rest].join("\n");
+};
+// Alte Spielstände: Pflanzen ohne Linie bekommen eine; alte Freischaltung -> getestete Sorten
+const _loadGameLC = loadGame;
+loadGame = function () {
+  const r = _loadGameLC();
+  if (STATE) {
+    for (const t of STATE.tents) {
+      for (const p of t.plants || []) if (p && !p.owner && !p.line) p.line = newLine(p.strain);
+      if (isCloneTent(t) && !t.clones) t.clones = [];
+    }
+    if (flag("lab_results") && !STATE.testedStrains) {
+      STATE.testedStrains = {};
+      for (const p of STATE.labSamples || []) STATE.testedStrains[p.strain] = true;
+    }
+  }
+  return r;
+};
+
+/* ---------------------------- NATALIE: TESTS ---------------------------- */
+QUESTS.labor.steps[3] = `Erledigt! Getestete Sorten stehen im Sortenverzeichnis. Weitere Tests bei Natalie: ${LAB_TEST_PRICE} € + ${LAB_SAMPLE_G} g pro Probe.`;
+// Proben: je Sorte + Linie ein Eintrag (Blüten des Bruders zählen nicht)
+function labStacks(filterFn) {
+  const g = {};
+  for (const b of STATE.buds) {
+    if (b.owner || (filterFn && !filterFn(b))) continue;
+    const k = b.strain + "|" + (b.line || "");
+    (g[k] = g[k] || { strain: b.strain, line: b.line || null, grams: 0 }).grams += b.grams;
+  }
+  return Object.values(g).filter(e => e.grams + 1e-9 >= LAB_SAMPLE_G).sort((a, b) => STRAINS[a.strain].nr - STRAINS[b.strain].nr || ((lineOf(a.line) || {}).n || 0) - ((lineOf(b.line) || {}).n || 0));
+}
+labCandidates = skip => [...new Set(labStacks().map(e => e.strain))].filter(k => !skip.includes(k));
+const stackLabel = e => STRAINS[e.strain].name + (e.line ? " · " + lineName(e.line) : "");
+function takeSample(e) {
+  let left = LAB_SAMPLE_G; const pieces = [];
+  for (const b of STATE.buds.filter(b => !b.owner && b.strain === e.strain && (b.line || null) === e.line).sort((a, b) => a.quality - b.quality)) {
+    if (left <= 0.05) break;
+    const g = Math.round(Math.min(left, b.grams) * 10) / 10;
+    pieces.push(takeFromList(STATE.buds, b, g)); left = Math.round((left - g) * 10) / 10;
+  }
+  for (const x of pieces) if (x.thc == null || x.terp == null) Object.assign(x, budLabValues(x.strain, x.quality, false, x.line));
+  const g = sumG(pieces) || 1;
+  return { strain: e.strain, line: e.line, pieces, thc: Math.round(pieces.reduce((n, x) => n + x.thc * x.grams, 0) / g * 10) / 10, terp: Math.round(pieces.reduce((n, x) => n + x.terp * x.grams, 0) / g * 100) / 100 };
+}
+const giveBack = parts => { for (const p of parts) for (const x of p.pieces) addToList(STATE.buds, x, x.grams); normalizeBuds(); saveGame(); };
+// Quest: 4 verschiedene Sorten
+labChoose = function (parts) {
+  const given = parts.map(p => p.strain);
+  openMenu({
+    title: `PROBE ${parts.length + 1} VON ${LAB_SAMPLES}`,
+    items: labStacks(b => !given.includes(b.strain)).map(e => ({ label: stackLabel(e), right: `${LAB_SAMPLE_G} g`, color: RARITIES[STRAINS[e.strain].rarity].color, e })),
+    onCancel: () => giveBack(parts),
+    onChoose(it) {
+      parts.push(takeSample(it.e)); Sound.select();
+      if (parts.length < LAB_SAMPLES) { labChoose(parts); return; }
+      STATE.labSamples = parts.map(p => ({ strain: p.strain, line: p.line, thc: p.thc, terp: p.terp }));
+      STATE.labDay = gameDay(); setQuest("labor", 2); saveGame();
+      openDialog(`Du hast Natalie ${LAB_SAMPLES} Proben à ${LAB_SAMPLE_G} g gegeben.\nNatalie: Perfekt, danke! Komm morgen wieder, dann sind die Ergebnisse der Analysen bereit.`);
+    },
+  });
+};
+const resultLine = p => `${STRAINS[p.strain].name}${p.line ? " (" + lineName(p.line) + ")" : ""}: THC ${labPct(p.thc)} · Terpene ${labPct(p.terp, 2)} (${(TERPENES[STRAINS[p.strain].terp] || { name: "?" }).name})`;
+function applyResults(list) { for (const p of list) if (STRAINS[p.strain]) testLine(p.line, p.strain); saveGame(); }
+const _talkNatalieLC = TALKS.natalie;
+TALKS.natalie = () => {
+  const s = labStep();
+  if (s === 2) {
+    if (gameDay() <= (STATE.labDay || 0)) { openDialog("Natalie: Die Analysen laufen noch. Komm morgen wieder, dann sind die Ergebnisse bereit."); return; }
+    const list = (STATE.labSamples || []).filter(p => STRAINS[p.strain]);
+    openDialog(
+      "Natalie: Da bist du ja! Die Ergebnisse sind fertig:\n" + list.map(resultLine).join("\n") + "\n" +
+      "Natalie: Jede Pflanze aus einem Samen ist eine eigene Linie – mit ihren eigenen Werten. Getestet sind genau diese Linien.\n" +
+      "Natalie: Alle Blüten dieser Linien zeigen jetzt ihre Werte und sind 5 % mehr wert. Willst du eine Linie behalten, nimm Stecklinge!\n" +
+      `Natalie: Und wenn du mehr testen lassen willst: ${LAB_TEST_PRICE} € und ${LAB_SAMPLE_G} g pro Probe.`,
+      null, () => { applyResults(list); setQuest("labor", 3); Sound.floor(); openDialog(`Im Sortenverzeichnis sind jetzt THC, Terpene und Aroma für ${list.length === 1 ? "1 Sorte" : list.length + " Sorten"} freigeschaltet.`); });
+    return;
+  }
+  if (s < 3) { _talkNatalieLC(); return; }
+  // Nach der Quest: Ergebnisse abholen + neue Proben
+  const due = (STATE.labTests || []).filter(t => gameDay() > t.day), waiting = (STATE.labTests || []).filter(t => gameDay() <= t.day);
+  if (due.length) {
+    STATE.labTests = waiting;
+    openDialog("Natalie: Deine Ergebnisse sind da:\n" + due.map(resultLine).join("\n") + "\nNatalie: Die Linien sind jetzt getestet – Werte sichtbar, 5 % mehr wert.",
+      null, () => { applyResults(due); Sound.floor(); });
+    return;
+  }
+  const opts = ["Probe testen lassen", "Tschüss"];
+  openDialog(`Natalie: Hi! Soll ich was testen? ${LAB_TEST_PRICE} € und ${LAB_SAMPLE_G} g pro Probe – Ergebnis morgen.` + (waiting.length ? `\n(${waiting.length} Probe${waiting.length > 1 ? "n" : ""} läuft gerade.)` : ""), opts, c => {
+    if (c !== 0) return;
+    const list = labStacks(b => !b.tested && !(waiting.some(w => w.strain === b.strain && w.line === (b.line || null))));
+    if (!list.length) { openDialog(`Natalie: Du hast keine ungetesteten Blüten mit mindestens ${LAB_SAMPLE_G} g dabei.`); return; }
+    openMenu({
+      title: `PROBE · ${euro(LAB_TEST_PRICE)}`,
+      items: list.map(e => ({ label: stackLabel(e), right: fmtG(e.grams), color: RARITIES[STRAINS[e.strain].rarity].color, e, disabled: STATE.money < LAB_TEST_PRICE })),
+      onChoose(it) {
+        if (STATE.money < LAB_TEST_PRICE) { Sound.bump(); return; }
+        STATE.money -= LAB_TEST_PRICE;
+        const p = takeSample(it.e);
+        (STATE.labTests = STATE.labTests || []).push({ strain: p.strain, line: p.line, thc: p.thc, terp: p.terp, day: gameDay() });
+        saveGame(); closeAllMenus(); Sound.select();
+        openDialog(`Du hast ${euro(LAB_TEST_PRICE)} bezahlt und ${LAB_SAMPLE_G} g ${stackLabel(it.e)} abgegeben.\nNatalie: Komm morgen wieder, dann ist das Ergebnis da.`);
+      },
+    });
+  });
+};
+
+/* ---------------------------- STECKLINGE ---------------------------- */
+function gelAvailable() { return (STATE.gelOpen || 0) + invCount("root_gel") * GEL_USES; }
+function scalpelAvailable() { return (STATE.scalpelOpen || 0) + invCount("scalpel") * SCALPEL_USES; }
+function useScalpel(n) { for (let i = 0; i < n; i++) { if (!STATE.scalpelOpen) { invAdd("scalpel", -1); STATE.scalpelOpen = SCALPEL_USES; } STATE.scalpelOpen--; } }
+const supplyMissing = () => scalpelAvailable() < 1 ? "Skalpell fehlt" : gelAvailable() < 1 ? "Gel fehlt" : "";
+const cutSupplies = () => Math.min(gelAvailable(), scalpelAvailable());
+const suppliesText = () => `Noch ${gelAvailable()} Portionen Bewurzelungsgel · Skalpell: noch ${scalpelAvailable()} Schnitte.`;
+function useGel(n) { for (let i = 0; i < n; i++) { if (!STATE.gelOpen) { invAdd("root_gel", -1); STATE.gelOpen = GEL_USES; } STATE.gelOpen--; } }
+const cloneTentsHere = () => STATE.tents.filter(t => isCloneTent(t) && (t.home || "apartment") === GAME.mapId).map(t => { if (!t.clones) t.clones = []; return t; });
+const cloneFree = t => CLONE_CAP - (t.clones || []).length;
+const cutReadyIn = pl => Math.max(0, Math.ceil((pl.cutAt || -1e9) + CLONE_COOLDOWN_MIN - gameMinutesTotal()));
+// Stecklinge schneiden: von einer Mutter (Pflanze im Zelt oder Steckling) in ein Stecklingszelt
+function cutClones(mother, target, after) {
+  if (cutReadyIn(mother) > 0) { openDialog(`Diese Pflanze braucht noch ca. ${cutReadyIn(mother)} min, bis sie neue Triebe für Stecklinge hat.`); return false; }
+  if (!target) { openDialog("Du brauchst hier ein Stecklingszelt mit freiem Platz (Growshop, 800 €)."); return false; }
+  const n = Math.min(CLONE_BATCH, cutSupplies(), cloneFree(target));
+  if (n < 1) { openDialog(scalpelAvailable() < 1 ? "Du brauchst ein Skalpell zum Schneiden (Growshop, 350 € für 100 Stecklinge)." : gelAvailable() < 1 ? "Du hast kein Bewurzelungsgel mehr (Growshop, 550 € für 25 Stecklinge)." : "Das Stecklingszelt ist voll."); return false; }
+  useGel(n); useScalpel(n); mother.cutAt = gameMinutesTotal();
+  if (!mother.line) mother.line = newLine(mother.strain);
+  for (let i = 0; i < n; i++) target.clones.push({ strain: mother.strain, line: mother.line, sex: mother.sex === "m" ? "m" : "f", reg: !!mother.reg });
+  saveGame(); Sound.select();
+  if (after) after(n);
+  return true;
+}
+// Zelt-Menü: neue Punkte bei Jungpflanzen + leeren Plätzen
+const _openSlotActionsLC = openSlotActions;
+openSlotActions = function (slot) {
+  const tent = GAME.screen.tent, pl = tent.plants[slot];
+  const here = cloneTentsHere().filter(t => t.clones.length);
+  if (!pl && !tent.readonly && here.length) {
+    openMenu({ title: "PLATZ " + (slot + 1), items: [{ label: "Samen pflanzen", id: "seed" }, { label: "Steckling einpflanzen", id: "clone" }],
+      onChoose(it) { if (it.id === "seed") { closeAllMenus(); _openSlotActionsLC(slot); } else chooseClone(tent, slot); } });
+    return;
+  }
+  _openSlotActionsLC(slot);
+  if (pl && !pl.owner && plantStage(pl) === JUNG && GAME.menus.length) {
+    const m = GAME.menus[GAME.menus.length - 1], i = m.items.findIndex(x => x.id === "info");
+    const wait = cutReadyIn(pl);
+    m.items.splice(i, 0, { label: "Stecklinge schneiden", id: "cut", right: wait ? `${wait} min` : supplyMissing(), disabled: wait > 0 || cutSupplies() < 1 });
+    const orig = m.onChoose;
+    m.onChoose = (it, idx) => {
+      if (it.id !== "cut") return orig(it, idx);
+      const target = cloneTentsHere().find(t => cloneFree(t) > 0);
+      if (!target) { openDialog("Du brauchst hier ein Stecklingszelt mit freiem Platz (Growshop, 800 €)."); return; }
+      openDialog(`Stecklinge von ${STRAINS[pl.strain].name} (${lineName(pl.line) || "neue Linie"}) schneiden?\nDie Pflanze wird dabei auf den Anfang der Jungpflanzen-Phase zurückgesetzt.`, ["Schneiden", "Abbrechen"], c => {
+        if (c !== 0) return;
+        cutClones(pl, target, n => {
+          pl.growMs = Math.min(pl.growMs, STAGES[JUNG].from * plantTotalMs(pl));
+          saveGame(); closeAllMenus();
+          openDialog(`Du hast ${n} Stecklinge geschnitten. Sie stehen im Stecklingszelt.\n${suppliesText()}`);
+        });
+      });
+    };
+  }
+};
+function cloneGroups(t) {
+  const g = {};
+  t.clones.forEach((c, i) => { const k = c.strain + "|" + c.line + "|" + c.sex; (g[k] = g[k] || { ...c, idx: [] }).idx.push(i); });
+  return Object.values(g);
+}
+const cloneLabel = c => `${STRAINS[c.strain].name} · ${lineName(c.line)}${c.sex === "m" ? " ♂" : ""}${(lineOf(c.line) || {}).tested ? " ✓" : ""}`;
+function chooseClone(tent, slot) {
+  const here = cloneTentsHere().filter(t => t.clones.length);
+  const items = here.flatMap(t => cloneGroups(t).map(c => ({ label: cloneLabel(c), right: "×" + c.idx.length, c, t })));
+  openMenu({
+    title: "STECKLING WÄHLEN", items,
+    onChoose(it) {
+      const soils = invOf("soil");
+      if (!soils.length) { openDialog("Du hast kein Substrat (Erde). Das gibt es im Growshop."); return; }
+      openMenu({
+        title: "SUBSTRAT WÄHLEN", items: soils.map(id => ({ label: ITEMS[id].name, right: "×" + invCount(id), id })),
+        onChoose(so) {
+          const free = tent.plants.map((p, i) => i).filter(i => !tent.plants[i] && i !== slot);
+          const plantOne = s => {
+            const k = it.t.clones.findIndex(c => c.strain === it.c.strain && c.line === it.c.line && c.sex === it.c.sex);
+            if (k < 0 || invCount(so.id) < 1) return false;
+            const c = it.t.clones.splice(k, 1)[0]; invAdd(so.id, -1);
+            const pl = { strain: c.strain, soil: so.id, plantedAt: now(), last: now(), growMs: 0, water: 100, wetMs: 0, dryMs: 0, fertVeg: null, fertBloom: null, sex: c.sex, reg: c.reg, line: c.line, clone: true };
+            pl.growMs = STAGES[JUNG].from * plantTotalMs(pl);
+            tent.plants[s] = pl; return true;
+          };
+          const done = n => { saveGame(); closeAllMenus(); Sound.floor(); openDialog(`Du hast ${n} ${n === 1 ? "Steckling" : "Stecklinge"} ${cloneLabel(it.c)} eingepflanzt. ${n === 1 ? "Er wächst" : "Sie wachsen"} ab der Jungpflanze weiter.`); };
+          const left = it.t.clones.filter(c => c.strain === it.c.strain && c.line === it.c.line && c.sex === it.c.sex).length;
+          if (free.length && left > 1 && invCount(so.id) > 1) {
+            openDialog("Nur diesen Platz oder alle freien Plätze bepflanzen?", ["Nur diesen", "Alle freien", "Abbrechen"], ch => {
+              if (ch === 0) { plantOne(slot); done(1); }
+              else if (ch === 1) { let n = 0; for (const s of [slot, ...free]) { if (!plantOne(s)) break; n++; } done(n); }
+            });
+          } else { plantOne(slot); done(1); }
+        },
+      });
+    },
+  });
+}
+// Stecklingszelt öffnen
+const _openTentLC = openTent;
+openTent = function (tent) {
+  if (!isCloneTent(tent)) return _openTentLC(tent);
+  Sound.door();
+  if (!tent.clones) tent.clones = [];
+  const groups = cloneGroups(tent);
+  openMenu({
+    title: `STECKLINGSZELT ${tent.clones.length}/${CLONE_CAP}`,
+    items: groups.length ? groups.map(c => ({ label: cloneLabel(c), right: "×" + c.idx.length, c })) : [],
+    empty: "Noch keine Stecklinge. Schneide sie von einer Jungpflanze im Growzelt.",
+    footer: () => `Gel: ${gelAvailable()} · Skalpell: ${scalpelAvailable()}`,
+    onChoose(it) {
+      const mother = tent.clones[it.c.idx.find(i => cutReadyIn(tent.clones[i]) === 0) ?? it.c.idx[0]];
+      const wait = cutReadyIn(mother);
+      openMenu({
+        title: cloneLabel(it.c).toUpperCase(),
+        items: [{ label: "Stecklinge schneiden", id: "cut", right: wait ? `${wait} min` : supplyMissing(), disabled: wait > 0 || cutSupplies() < 1 || cloneFree(tent) < 1 },
+          { label: "1 Steckling entsorgen", id: "del" }, { label: "Info", id: "info" }],
+        onChoose(a) {
+          if (a.id === "cut") cutClones(mother, tent, n => { closeAllMenus(); openDialog(`Du hast ${n} neue Stecklinge geschnitten.\n${suppliesText()}`); });
+          else if (a.id === "del") openDialog("Einen Steckling entsorgen?", ["Ja", "Nein"], c => { if (c === 0) { tent.clones.splice(tent.clones.indexOf(mother), 1); saveGame(); closeAllMenus(); openDialog("Steckling entsorgt."); } });
+          else {
+            const l = lineOf(mother.line);
+            openDialog(`${cloneLabel(it.c)}\n${l && l.tested ? "Linie getestet: Blüten zeigen ihre Werte und sind 5 % mehr wert." : "Linie noch nicht getestet (Natalie, College)."}\nZum Blühen: im Growzelt auf einem leeren Platz „Steckling einpflanzen“.`);
+          }
+        },
+      });
+    },
+  });
+};
+// Stecklingszelt im Raum: kleine Setzlinge im Sichtfenster
+const _drawTentLC = OBJECT_TYPES.growTent.draw;
+OBJECT_TYPES.growTent.draw = function (ctx, x, y, o, t) {
+  _drawTentLC.call(this, ctx, x, y, o, t);
+  if (!o.tent || !isCloneTent(o.tent)) return;
+  const n = Math.min(6, Math.ceil(((o.tent.clones || []).length) / 9));
+  px(ctx, "#2e7a48", x + 4, y - 9, o.w * 16 - 8, 3);
+  for (let i = 0; i < n; i++) { const sx = x + 6 + i * 4; px(ctx, "#5ab04a", sx, y - 13, 2, 4); px(ctx, "#7ad060", sx - 1, y - 14, 4, 2); }
+};
+/* =====================================================================
+   37. DR. BRENNER (LIZENZ), ANRUF VOM BRUDER, KRYPTO-HANDY & DARKNET
+   ---------------------------------------------------------------------
+   Nach Natalies Labortest:
+   - Dr. Brenner (Labor 1) braucht für größere Forschungsprojekte einen
+     Produzenten. Anbaulizenz bei ihm: 5.000.000 € → Gewächshaus beim
+     Makler kaufbar. (Medizinischer Anbau folgt später.)
+   - Der Bruder ruft an: „Check unbedingt deinen Briefkasten!“ → im
+     Briefkasten liegt ein Krypto-Handy → App „Darknet“ im Smartphone.
+   Darknet (nur online): Blüten und Stecklinge an andere Spieler verkaufen.
+     Währung Bitcoin. In der Wallet kann man Euro → Bitcoin tauschen, aber
+     nicht zurück. Kurs für alle gleich, schwankt jeden Spieltag um bis zu
+     ±5 % zum Vortag. Preis pro Gramm / Steckling, Teilkäufe möglich.
+     10 % Gebühr, Angebote unbegrenzt. Lieferung nach 1 Spieltag per Post
+     in den Briefkasten im Wohnhaus.
+   ===================================================================== */
+const LICENSE_PRICE = 5000000, DN_FEE = 0.10;
+
+/* ---------------------------- QUESTS ---------------------------- */
+QUESTS.lizenz = {
+  title: "Die Anbaulizenz",
+  steps: [
+    "Sprich mit Dr. Brenner im College (Labor 1, Untergeschoss).",
+    `Besorge ${euro(LICENSE_PRICE)} für die Anbaulizenz bei Dr. Brenner.`,
+    "Erledigt! Mit der Lizenz kannst du beim Makler das Gewächshaus kaufen.",
+  ],
+};
+QUESTS.post = {
+  title: "Post vom Bruder",
+  steps: [
+    "Dein Bruder sagt, du sollst unbedingt deinen Briefkasten checken (Wohnhaus, Erdgeschoss).",
+    "Erledigt! Im Briefkasten lag ein Krypto-Handy – im Smartphone gibt es jetzt die App „Darknet“.",
+  ],
+};
+MAIN_QUESTS.push("post", "lizenz");
+ITEMS.crypto_phone = { cat: "key", name: "Krypto-Handy", price: 0, desc: "Ein verschlüsseltes Handy von deinem Bruder. Darauf: die App „Darknet“." };
+ITEMS.grow_license = { cat: "key", name: "Anbaulizenz", price: 0, desc: "Legale Anbaugenehmigung für Forschungsprojekte (Dr. Brenner)." };
+
+// Nach dem Labortest: Lizenz-Quest + Anruf vom Bruder beim nächsten Ortswechsel
+const _setQuestDN = setQuest;
+setQuest = function (id, step, silent) {
+  _setQuestDN(id, step, silent);
+  if (id === "labor" && step >= 3) afterLabTest();
+};
+function afterLabTest() {
+  if (questStep("lizenz") < 0) _setQuestDN("lizenz", 0, true);
+  if (questStep("post") < 0 && !flag("bro_call")) setFlag("bro_call_due");
+}
+const _placePlayerDN = placePlayer;
+placePlayer = function (mapId, spawn) {
+  _placePlayerDN(mapId, spawn);
+  if (!STATE || !flag("bro_call_due") || flag("bro_call")) return;
+  setFlag("bro_call"); setFlag("bro_call_due", false);
+  const prev = GAME.pendingEvent;
+  GAME.pendingEvent = () => {
+    if (prev) prev();
+    setTimeout(() => phoneCall("Bruder",
+      "Hey, ich bin's! Ich kann nicht lange reden … Hör zu: Check UNBEDINGT deinen Briefkasten! Da liegt was für dich. Mehr kann ich am Telefon nicht sagen.",
+      () => { setQuest("post", 0); addMessage("Bruder", "Briefkasten. Wohnhaus. Heute noch."); }), 600);
+  };
+};
+const _loadGameDN = loadGame;
+loadGame = function () {
+  const r = _loadGameDN();
+  if (STATE && questStep("labor") >= 3) afterLabTest();
+  if (STATE && flag("crypto_phone")) addDarknetApp();
+  return r;
+};
+
+/* ---------------------------- DR. BRENNER ---------------------------- */
+NPC_LOOKS.brenner = { r: "#f0f0f4", R: "#c4c4d0", p: "#3a3a48", P: "#2a2a36", h: "#5a5a64", H: "#7a7a84" };
+MAPS.college_ug.npcs.push({ id: "brenner", x: 6, y: 4, dir: "down", look: "brenner", talk: "brenner", condition: () => questStep("labor") >= 3 });
+TALKS.brenner = () => {
+  if (flag("anbaugenehmigung")) { openDialog("Dr. Brenner: Mit Ihrer Lizenz sind Sie offiziell unser Produzent. Das Gewächshaus in Jacksonville wartet auf Sie!"); return; }
+  const intro = questStep("lizenz") <= 0;
+  openDialog(
+    (intro ? "Dr. Brenner: Guten Tag. Brenner, ich leite hier die Pflanzenforschung.\n" +
+      "Dr. Brenner: Natalie hat mir von Ihren Proben erzählt – beeindruckend.\n" +
+      "Dr. Brenner: Für größere Forschungsprojekte brauchen wir einen Produzenten. Jemanden, der zuverlässig große Mengen in Top-Qualität liefert.\n" +
+      "Dr. Brenner: Dafür brauchen Sie eine Anbaulizenz. Die kann ich Ihnen ausstellen – für " + euro(LICENSE_PRICE) + ".\n"
+      : "Dr. Brenner: Haben Sie sich das mit der Lizenz überlegt? " + euro(LICENSE_PRICE) + ".\n") +
+    "Dr. Brenner: Mit der Lizenz dürfen Sie auch das Gewächshaus in Jacksonville kaufen.",
+    ["Lizenz kaufen", "Später"], c => {
+      if (intro) setQuest("lizenz", 1, true);
+      if (c !== 0) return;
+      if (STATE.money < LICENSE_PRICE) { Sound.bump(); openDialog(`Dr. Brenner: Dafür reicht es leider noch nicht. Kommen Sie wieder, wenn Sie ${euro(LICENSE_PRICE)} haben.`); return; }
+      STATE.money -= LICENSE_PRICE; setFlag("anbaugenehmigung"); invAdd("grow_license", 1);
+      setQuest("lizenz", 2); saveGame(); Sound.floor();
+      openDialog("Dr. Brenner: Hervorragend! Hier ist Ihre Anbaulizenz.\nDu hast die Anbaulizenz erhalten! Beim Makler in Jacksonville kannst du jetzt das Gewächshaus kaufen.");
+    });
+};
+
+/* ---------------------------- BRIEFKASTEN ---------------------------- */
+const _mailboxDN = CUSTOM_INTERACTIONS.mailbox;
+CUSTOM_INTERACTIONS.mailbox = () => {
+  if (questStep("post") === 0) {
+    Sound.select();
+    openDialog("Du öffnest deinen Briefkasten …\nDarin liegt ein kleines Paket ohne Absender. Darin: ein schwarzes Handy und ein Zettel:\n„Für Notfälle. Die App kennt nur, wer sie braucht. – B.“", null, () => {
+      invAdd("crypto_phone", 1); setFlag("crypto_phone"); addDarknetApp();
+      setQuest("post", 1); Sound.floor();
+      openDialog("Du hast ein Krypto-Handy erhalten!\nIm Smartphone gibt es jetzt die App „Darknet“.");
+    });
+    return;
+  }
+  if (flag("crypto_phone")) { collectMail(); return; }
+  _mailboxDN();
+};
+// Ware einlagern: Blüten in Tasche/Schrank, Stecklinge ins Stecklingszelt
+function localLine(strain, ld) {
+  if (!ld) return null;
+  // eigene Linie (zurückgezogenes Angebot) -> dieselbe Linie wie vorher
+  if (window.DARKNET && ld.key.startsWith(window.DARKNET.me() + ":")) { const own = ld.key.split(":")[1]; if (lines()[own]) return own; }
+  STATE.extLines = STATE.extLines || {};
+  if (STATE.extLines[ld.key] && lines()[STATE.extLines[ld.key]]) {
+    const l = lines()[STATE.extLines[ld.key]]; if (ld.tested) l.tested = true; return STATE.extLines[ld.key];
+  }
+  const id = newLine(strain), l = lines()[id];
+  Object.assign(l, { thcOff: ld.thcOff, terpOff: ld.terpOff, tested: !!ld.tested, from: ld.from, extKey: ld.key });
+  STATE.extLines[ld.key] = id;
+  return id;
+}
+function receiveGoods(kind, d, qty) {
+  if (!STRAINS[d.strain]) return false;
+  if (kind === "clone") {
+    const t = STATE.tents.find(t => isCloneTent(t) && (t.clones = t.clones || []) && cloneFree(t) >= qty);
+    if (!t) return false;
+    const line = localLine(d.strain, d.line);
+    for (let i = 0; i < qty; i++) t.clones.push({ strain: d.strain, line, sex: d.sex === "m" ? "m" : "f", reg: !!d.reg });
+    return true;
+  }
+  if (qty > bagFree() + stashFree() + 1e-9) return false;
+  const line = localLine(d.strain, d.line);
+  const bud = { id: STATE.nextBudId++, strain: d.strain, rarity: d.rarity, quality: d.quality, strength: d.thc, thc: d.thc, terp: d.terp, tested: !!d.tested,
+    grams: qty, value: Math.round(d.valuePerG * qty * 100) / 100, harvestedAt: now(), line };
+  const toBag = Math.min(qty, bagFree());
+  if (toBag > 0) addToList(STATE.buds, bud, toBag);
+  if (qty - toBag > 0.05) addToList(stash(), bud, Math.round((qty - toBag) * 10) / 10);
+  discover(d.strain);
+  return true;
+}
+const goodsName = (kind, d, qty) => kind === "clone" ? `${qty}× Steckling ${STRAINS[d.strain] ? STRAINS[d.strain].name : "?"}` : `${fmtG(qty)} ${STRAINS[d.strain] ? STRAINS[d.strain].name : "?"}`;
+async function collectMail() {
+  Sound.select();
+  const got = [], stuck = [];
+  // zurückgezogene Angebote (lokal)
+  STATE.mailbox = (STATE.mailbox || []).filter(m => { if (receiveGoods(m.kind, m.data, m.qty)) { got.push(goodsName(m.kind, m.data, m.qty)); return false; } stuck.push(goodsName(m.kind, m.data, m.qty)); return true; });
+  let waiting = 0;
+  if (window.DARKNET) {
+    try {
+      for (const d of await window.DARKNET.deliveries()) {
+        if (new Date(d.deliver_at).getTime() > Date.now()) { waiting++; continue; }
+        if (receiveGoods(d.kind, d.data, +d.qty)) { await window.DARKNET.collected(d.id); got.push(goodsName(d.kind, d.data, +d.qty)); }
+        else stuck.push(goodsName(d.kind, d.data, +d.qty));
+      }
+    } catch (e) { openDialog("Du öffnest deinen Briefkasten …\nDas Krypto-Handy hat gerade kein Netz – Pakete kann ich nicht prüfen."); return; }
+  }
+  normalizeBuds(); saveGame();
+  let t = "Du öffnest deinen Briefkasten …\n";
+  if (got.length) t += "Pakete abgeholt: " + got.join(", ") + ".\n";
+  if (stuck.length) t += "Kein Platz für: " + stuck.join(", ") + " (Tasche/Schrank voll oder kein Stecklingszelt mit freien Plätzen).\n";
+  if (waiting) t += `${waiting} Paket${waiting > 1 ? "e sind" : " ist"} noch unterwegs.\n`;
+  if (!got.length && !stuck.length && !waiting) t += "Nichts drin.";
+  if (got.length) Sound.floor();
+  openDialog(t.trim());
+}
+
+/* ---------------------------- BITCOIN-KURS ---------------------------- */
+// Für alle Spieler gleich: Welt-Spieltag aus der echten Zeit, je Tag bis ±5 % zum Vortag
+const BTC_START = 50000, BTC_EPOCH = Date.UTC(2026, 9, 1);
+const worldDay = (t = Date.now()) => Math.floor((t - BTC_EPOCH) / 1000 * GAME_MIN_PER_REAL_SEC / 1440);
+const BTC_CACHE = [BTC_START];
+function btcRate(day = worldDay()) {
+  day = Math.max(0, day);
+  while (BTC_CACHE.length <= day) {
+    const d = BTC_CACHE.length; let h = Math.imul(d ^ 0x9e3779b9, 2654435761) >>> 0; h = Math.imul(h ^ (h >>> 15), 2246822519) >>> 0; h = (h ^ (h >>> 13)) >>> 0;
+    // Zufall ±5 %, mit leichtem Zug zurück Richtung 50.000 € (damit der Kurs nicht davonläuft)
+    const prev = BTC_CACHE[d - 1], step = clamp(0.05 * ((h % 20001) / 10000 - 1) - 0.01 * Math.log(prev / BTC_START), -0.05, 0.05);
+    BTC_CACHE.push(Math.round(prev * (1 + step) * 100) / 100);
+  }
+  return BTC_CACHE[day];
+}
+const fmtBTC = v => (+v).toFixed(6).replace(".", ",") + " BTC";
+const btcToEur = v => euro(Math.round(v * btcRate() * 100) / 100);
+
+/* ---------------------------- SMARTPHONE-APP ---------------------------- */
+function addDarknetApp() { if (!PHONE_APPS.some(a => a.id === "darknet")) PHONE_APPS.push({ id: "darknet", label: "Darknet", color: "#30c060" }); }
+const _updatePhoneDN = updatePhone;
+updatePhone = function () {
+  const sc = GAME.screen;
+  if (sc && sc.view === "darknet") { sc.view = "home"; GAME.screen = null; openDarknet(); return; }
+  _updatePhoneDN();
+};
+// Benachrichtigungen (online): Verkäufe + angekommene Pakete
+setInterval(async () => {
+  if (!window.DARKNET || !STATE || !flag("crypto_phone")) return;
+  try {
+    for (const s of await window.DARKNET.sales()) {
+      await window.DARKNET.seen(s.id);
+      addMessage("Darknet", `Verkauft an ${s.buyer}: ${goodsName(s.kind, s.data, +s.qty)} – +${fmtBTC(s.btc)} (nach 10 % Gebühr).`); smsPing("Darknet");
+    }
+    STATE.dnNotified = STATE.dnNotified || [];
+    for (const d of await window.DARKNET.deliveries()) {
+      if (new Date(d.deliver_at).getTime() <= Date.now() && !STATE.dnNotified.includes(d.id)) {
+        STATE.dnNotified.push(d.id); addMessage("Darknet", `Dein Paket (${goodsName(d.kind, d.data, +d.qty)}) ist da – Briefkasten im Wohnhaus.`); smsPing("Darknet");
+      }
+    }
+  } catch (e) { }
+}, 30000);
+
+/* ---------------------------- DARKNET-OBERFLÄCHE ---------------------------- */
+const DN_CSS = `#darknet{position:fixed;inset:0;z-index:55;background:#050a06;color:#5cf08a;font:13px monospace;display:flex;flex-direction:column}
+#darknet *{box-sizing:border-box}#darknet .top{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:2px solid #1d4a2a}
+#darknet .top b{font-size:16px;letter-spacing:2px;flex:1}#darknet button{font:bold 13px monospace;background:#0f2416;color:#5cf08a;border:2px solid #2c7a44;border-radius:4px;padding:8px 10px}
+#darknet button:disabled{opacity:.4}#darknet .tabs{display:flex;gap:4px;padding:8px 12px}#darknet .tabs button{flex:1;padding:8px 2px}#darknet .tabs button.on{background:#2c7a44;color:#04110a}
+#darknet .body{flex:1;overflow:auto;padding:4px 12px 16px}#darknet .row{border:1px solid #1d4a2a;border-radius:4px;padding:8px;margin:6px 0;display:flex;gap:8px;align-items:center}
+#darknet .row .t{flex:1;min-width:0}#darknet .dim{color:#3a9a5a;font-size:11px}#darknet .warn{color:#f0c040}#darknet input{width:100%;font:16px monospace;background:#000;color:#5cf08a;border:2px solid #2c7a44;border-radius:4px;padding:8px;margin:4px 0 8px}
+#darknet .box{border:2px solid #2c7a44;border-radius:6px;padding:12px;margin-top:8px}#darknet .msg{min-height:18px;margin:6px 0;color:#f0c040}`;
+function openDarknet() {
+  if (!window.DARKNET) { openDialog("Das Krypto-Handy sucht ein Netz …\n„Keine Verbindung.“\n(Das Darknet gibt es nur in der Online-Version mit Login.)"); return; }
+  if (!document.getElementById("dn-css")) { const st = document.createElement("style"); st.id = "dn-css"; st.textContent = DN_CSS; document.head.appendChild(st); }
+  const el = document.createElement("div"); el.id = "darknet";
+  el.innerHTML = `<div class="top"><b>▓ DARKNET</b><span id="dn-bal" class="dim"></span><button id="dn-x">✕</button></div>
+    <div class="tabs"><button data-t="market" class="on">Markt</button><button data-t="sell">Verkaufen</button><button data-t="mine">Angebote</button><button data-t="wallet">Wallet</button></div>
+    <div class="body" id="dn-body"></div>`;
+  document.body.appendChild(el);
+  ["keydown", "keyup"].forEach(ev => el.addEventListener(ev, x => x.stopPropagation()));
+  const body = el.querySelector("#dn-body"), DN = window.DARKNET;
+  let tab = "market", bal = 0;
+  const close = () => { el.remove(); saveGame(); };
+  el.querySelector("#dn-x").onclick = close;
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+  const refreshBal = async () => { try { bal = await DN.wallet(); } catch (e) { } el.querySelector("#dn-bal").textContent = fmtBTC(bal); };
+  el.querySelectorAll(".tabs button").forEach(b => b.onclick = () => { tab = b.dataset.t; el.querySelectorAll(".tabs button").forEach(x => x.classList.toggle("on", x === b)); show(); });
+  const strainLabel = d => (STRAINS[d.strain] ? STRAINS[d.strain].name : "Unbekannte Sorte") + (d.line ? ` · Linie ${d.line.n}` : "");
+  const budStats = d => d.tested ? `THC ${labPct(d.thc)} · Terp. ${labPct(d.terp, 2)} · getestet` : "ungetestet";
+  const listingText = l => `<b>${esc(strainLabel(l.data))}</b>${l.kind === "clone" ? " · Steckling" + (l.data.sex === "m" ? " ♂" : "") : ""}<br>` +
+    `<span class="dim">${l.kind === "bud" ? `Q${l.data.quality} · ${esc(budStats(l.data))}` : (l.data.line && l.data.line.tested ? "Linie getestet" : "Linie ungetestet")} · von ${esc(l.seller)}</span><br>` +
+    `${l.kind === "bud" ? fmtG(+l.qty) : (+l.qty) + " Stk."} · ${fmtBTC(l.price_btc)}/${l.kind === "bud" ? "g" : "Stk."} <span class="dim">(≈ ${btcToEur(+l.price_btc)})</span>`;
+  async function show() {
+    body.innerHTML = `<div class="dim">Lade …</div>`;
+    await refreshBal();
+    try {
+      if (tab === "market") {
+        const all = (await DN.listings()).filter(l => STRAINS[l.data.strain]);
+        body.innerHTML = `<div class="dim">Kurs: 1 BTC = ${euro(btcRate())} · Lieferung nach 1 Spieltag in deinen Briefkasten</div>` +
+          (all.length ? all.map(l => `<div class="row"><div class="t">${listingText(l)}</div>${l.seller_id === DN.me() ? '<span class="dim">deins</span>' : `<button data-id="${l.id}">Kaufen</button>`}</div>`).join("") : `<div class="box">Noch keine Angebote. Sei der Erste!</div>`);
+        body.querySelectorAll("button[data-id]").forEach(b => b.onclick = () => buyForm(all.find(l => l.id == b.dataset.id)));
+      } else if (tab === "sell") {
+        const stacks = STATE.buds.filter(b => !b.owner && b.grams >= 1);
+        const clones = STATE.tents.filter(isCloneTent).flatMap(t => cloneGroups(t).map(c => ({ ...c, t })));
+        body.innerHTML = `<div class="dim">Aus deiner Tasche und deinen Stecklingszelten. Gebühr: 10 % vom Verkaufspreis.</div>` +
+          stacks.map((b, i) => `<div class="row"><div class="t"><b>${esc(STRAINS[b.strain].name)}${b.line ? " · " + esc(lineName(b.line)) : ""}</b><br><span class="dim">Q${b.quality} · ${b.tested ? "THC " + labPct(b.thc) + " · getestet" : "ungetestet"}</span><br>${fmtG(b.grams)} · Wert ${euro(b.value / b.grams)}/g</div><button data-b="${i}">Anbieten</button></div>`).join("") +
+          clones.map((c, i) => `<div class="row"><div class="t"><b>${esc(cloneLabel(c))}</b><br><span class="dim">Stecklinge</span><br>${c.idx.length} Stk.</div><button data-c="${i}">Anbieten</button></div>`).join("") +
+          (!stacks.length && !clones.length ? `<div class="box">Du hast nichts zum Verkaufen dabei.</div>` : "");
+        body.querySelectorAll("button[data-b]").forEach(b => b.onclick = () => sellForm("bud", stacks[+b.dataset.b]));
+        body.querySelectorAll("button[data-c]").forEach(b => b.onclick = () => sellForm("clone", clones[+b.dataset.c]));
+      } else if (tab === "mine") {
+        const mine = (await DN.listings()).filter(l => l.seller_id === DN.me());
+        body.innerHTML = mine.length ? mine.map(l => `<div class="row"><div class="t">${listingText(l)}</div><button data-id="${l.id}">Zurückziehen</button></div>`).join("") : `<div class="box">Du hast gerade keine Angebote.</div>`;
+        body.querySelectorAll("button[data-id]").forEach(b => b.onclick = async () => {
+          b.disabled = true;
+          const r = await DN.withdraw(+b.dataset.id);
+          if (r.error) { alertBox(r.error); return; }
+          if (!receiveGoods(r.kind, r.data, +r.qty)) { (STATE.mailbox = STATE.mailbox || []).push({ kind: r.kind, data: r.data, qty: +r.qty }); alertBox("Zurückgezogen. Kein Platz – die Ware liegt in deinem Briefkasten."); }
+          normalizeBuds(); saveGame(); show();
+        });
+      } else {
+        const today = btcRate(), y = btcRate(worldDay() - 1), ch = (today / y - 1) * 100;
+        body.innerHTML = `<div class="box"><div>Guthaben</div><div style="font-size:20px;margin:4px 0">${fmtBTC(bal)}</div><div class="dim">≈ ${btcToEur(bal)}</div></div>
+          <div class="box"><div>Kurs heute: 1 BTC = ${euro(today)} <span class="${ch >= 0 ? "" : "warn"}">(${ch >= 0 ? "+" : ""}${ch.toFixed(1).replace(".", ",")} %)</span></div>
+          <div class="dim">Euro → Bitcoin. Zurücktauschen geht nicht.</div>
+          <label>Betrag in €<input id="dn-eur" type="number" min="1" step="1" inputmode="decimal"></label><div id="dn-calc" class="dim"></div>
+          <button id="dn-buybtc">Bitcoin kaufen</button><div class="msg" id="dn-msg"></div><div class="dim">Dein Geld: ${euro(STATE.money)}</div></div>`;
+        const inp = body.querySelector("#dn-eur"), msg = body.querySelector("#dn-msg");
+        inp.oninput = () => { const e = +inp.value || 0; body.querySelector("#dn-calc").textContent = e > 0 ? `= ${fmtBTC(e / today)}` : ""; };
+        body.querySelector("#dn-buybtc").onclick = async () => {
+          const e = Math.round((+inp.value || 0) * 100) / 100;
+          if (e <= 0) return msg.textContent = "Bitte einen Betrag eingeben.";
+          if (e > STATE.money) return msg.textContent = "So viel Geld hast du nicht.";
+          const btc = Math.floor(e / today * 1e8) / 1e8;
+          STATE.money -= e; saveGame();
+          try { await DN.deposit(btc); } catch (x) { STATE.money += e; saveGame(); return msg.textContent = "Fehler: " + x.message; }
+          Sound.floor(); show();
+        };
+      }
+    } catch (e) { body.innerHTML = `<div class="box warn">Keine Verbindung zum Darknet (${esc(e.message)}).</div>`; }
+  }
+  function alertBox(t) { const m = document.createElement("div"); m.className = "box warn"; m.textContent = t; body.prepend(m); }
+  function buyForm(l) {
+    const unit = l.kind === "bud" ? "g" : "Stk.";
+    body.innerHTML = `<div class="box"><div>${listingText(l)}</div>
+      <label>Menge (${unit}, max. ${(+l.qty).toString().replace(".", ",")})<input id="dn-q" type="number" min="${l.kind === "bud" ? 0.1 : 1}" step="${l.kind === "bud" ? 0.1 : 1}" max="${l.qty}" inputmode="decimal"></label>
+      <div id="dn-cost" class="dim"></div><div class="msg" id="dn-msg"></div>
+      <button id="dn-ok">Kaufen</button> <button id="dn-back">Zurück</button></div>`;
+    const q = body.querySelector("#dn-q"), msg = body.querySelector("#dn-msg");
+    q.oninput = () => { const a = +q.value || 0; const c = a * l.price_btc; body.querySelector("#dn-cost").textContent = a > 0 ? `Preis: ${fmtBTC(c)} (≈ ${btcToEur(c)}) · Guthaben: ${fmtBTC(bal)}` : ""; };
+    body.querySelector("#dn-back").onclick = show;
+    body.querySelector("#dn-ok").onclick = async () => {
+      let a = +q.value || 0; a = l.kind === "bud" ? Math.round(a * 10) / 10 : Math.floor(a);
+      if (a <= 0 || a > +l.qty) return msg.textContent = "Ungültige Menge.";
+      if (a * l.price_btc > bal + 1e-9) return msg.textContent = "Nicht genug Bitcoin – tausche in der Wallet Euro in Bitcoin.";
+      body.querySelector("#dn-ok").disabled = true;
+      const r = await DN.buy(l.id, a).catch(e => ({ error: e.message }));
+      if (r.error) { body.querySelector("#dn-ok").disabled = false; return msg.textContent = r.error; }
+      Sound.floor();
+      body.innerHTML = `<div class="box">Gekauft: ${goodsName(l.kind, l.data, a)} für ${fmtBTC(r.cost)}.<br>Lieferung nach 1 Spieltag in deinen Briefkasten (Wohnhaus, Erdgeschoss).<br><br><button id="dn-back">OK</button></div>`;
+      body.querySelector("#dn-back").onclick = show; refreshBal();
+    };
+  }
+  function sellForm(kind, src) {
+    const max = kind === "bud" ? src.grams : src.idx.length, unit = kind === "bud" ? "g" : "Stk.";
+    const suggest = kind === "bud" ? (src.value / src.grams) / btcRate() : 50 / btcRate();
+    body.innerHTML = `<div class="box"><b>${esc(kind === "bud" ? STRAINS[src.strain].name + (src.line ? " · " + lineName(src.line) : "") : cloneLabel(src))}</b>
+      <label>Menge (${unit}, max. ${String(max).replace(".", ",")})<input id="dn-q" type="number" min="${kind === "bud" ? 1 : 1}" step="${kind === "bud" ? 0.1 : 1}" max="${max}" value="${max}" inputmode="decimal"></label>
+      <label>Preis pro ${unit} in BTC<input id="dn-p" type="number" min="0.000001" step="0.000001" value="${suggest.toFixed(6)}" inputmode="decimal"></label>
+      <div id="dn-calc" class="dim"></div><div class="msg" id="dn-msg"></div>
+      <button id="dn-ok">Einstellen</button> <button id="dn-back">Zurück</button></div>`;
+    const q = body.querySelector("#dn-q"), p = body.querySelector("#dn-p"), msg = body.querySelector("#dn-msg");
+    const calc = () => { const a = +q.value || 0, pr = +p.value || 0; body.querySelector("#dn-calc").textContent = `Pro ${unit} ≈ ${btcToEur(pr)} · Alles verkauft: ${fmtBTC(a * pr * (1 - DN_FEE))} für dich (nach 10 % Gebühr)`; };
+    q.oninput = p.oninput = calc; calc();
+    body.querySelector("#dn-back").onclick = show;
+    body.querySelector("#dn-ok").onclick = async () => {
+      let a = +q.value || 0; a = kind === "bud" ? Math.round(a * 10) / 10 : Math.floor(a);
+      const pr = Math.round((+p.value || 0) * 1e8) / 1e8;
+      if (a <= 0 || a > max + 1e-9) return msg.textContent = "Ungültige Menge.";
+      if (pr <= 0) return msg.textContent = "Bitte einen Preis eingeben.";
+      body.querySelector("#dn-ok").disabled = true;
+      const lineData = id => { const l = lineOf(id); return l ? { key: l.extKey || DN.me() + ":" + id, n: l.n, thcOff: l.thcOff, terpOff: l.terpOff, tested: !!l.tested, from: l.from || ONLINE.name } : null; };
+      let data, undo;
+      if (kind === "bud") {
+        const part = takeFromList(STATE.buds, src, a);
+        data = { strain: part.strain, quality: part.quality, rarity: part.rarity, thc: part.thc, terp: part.terp, tested: !!part.tested, valuePerG: Math.round(part.value / part.grams * 100) / 100, line: lineData(part.line) };
+        undo = () => addToList(STATE.buds, part, part.grams);
+      } else {
+        const taken = [];
+        for (let i = 0; i < a; i++) { const k = src.t.clones.findIndex(c => c.strain === src.strain && c.line === src.line && c.sex === src.sex); if (k >= 0) taken.push(src.t.clones.splice(k, 1)[0]); }
+        data = { strain: src.strain, sex: src.sex, reg: !!src.reg, line: lineData(src.line) };
+        undo = () => src.t.clones.push(...taken);
+      }
+      saveGame();
+      try { await DN.create(kind, data, a, pr); } catch (e) { undo(); normalizeBuds(); saveGame(); body.querySelector("#dn-ok").disabled = false; return msg.textContent = "Fehler: " + e.message; }
+      normalizeBuds(); saveGame(); Sound.select();
+      body.innerHTML = `<div class="box">Angebot eingestellt: ${goodsName(kind, data, a)} für ${fmtBTC(pr)}/${unit}.<br>Wenn jemand kauft, bekommst du eine SMS.<br><br><button id="dn-back">OK</button></div>`;
+      body.querySelector("#dn-back").onclick = show;
+    };
+  }
+  show();
+}
 
 /* ---------------------------------------------------------------------
    START
@@ -9542,6 +10225,22 @@ window.STRAIN_DB = {
     if (error.code === "23505") { try { return { taken: "cross", row: await window.STRAIN_DB.findCross(e.key) }; } catch (x) { return {}; } }
     return {};
   },
+};
+
+/* ---------------------------- DARKNET (Datenbank) ---------------------------- */
+const dnErr = e => { throw new Error((e && e.message) || "Keine Verbindung"); };
+window.DARKNET = {
+  me: () => ONLINE.user && ONLINE.user.id,
+  async wallet() { const { data, error } = await ONLINE.sb.from("wallets").select("btc").eq("user_id", ONLINE.user.id).maybeSingle(); if (error) dnErr(error); return data ? +data.btc : 0; },
+  async deposit(btc) { const { data, error } = await ONLINE.sb.rpc("wallet_deposit", { amount: btc }); if (error) dnErr(error); return +data; },
+  async listings() { const { data, error } = await ONLINE.sb.from("darknet_listings").select("*").gt("qty", 0).order("created_at", { ascending: false }).limit(200); if (error) dnErr(error); return data; },
+  async create(kind, data, qty, price) { const { data: row, error } = await ONLINE.sb.from("darknet_listings").insert({ kind, data, qty, price_btc: price }).select("*").single(); if (error) dnErr(error); return row; },
+  async buy(id, amount) { const { data, error } = await ONLINE.sb.rpc("darknet_buy", { listing: id, amount }); if (error) dnErr(error); return data; },
+  async withdraw(id) { const { data, error } = await ONLINE.sb.rpc("darknet_withdraw", { listing: id }); if (error) dnErr(error); return data; },
+  async deliveries() { const { data, error } = await ONLINE.sb.from("darknet_deliveries").select("*").eq("user_id", ONLINE.user.id).eq("collected", false).order("deliver_at", { ascending: true }); if (error) dnErr(error); return data; },
+  async collected(id) { const { error } = await ONLINE.sb.from("darknet_deliveries").update({ collected: true }).eq("id", id); if (error) dnErr(error); },
+  async sales() { const { data, error } = await ONLINE.sb.from("darknet_sales").select("*").eq("seller_id", ONLINE.user.id).eq("seen", false); if (error) dnErr(error); return data; },
+  async seen(id) { const { error } = await ONLINE.sb.from("darknet_sales").update({ seen: true }).eq("id", id); if (error) dnErr(error); },
 };
 
 /* ---------------------------- SPEICHERN ---------------------------- */
