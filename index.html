@@ -2602,7 +2602,7 @@ function harvestPlant(tent, slot) {
   if (pollinated) {
     let child = crossResult(pl.strain, father.strain);
     const known = !!child;
-    if (!child) child = Math.random() < 0.5 ? pl.strain : father.strain;
+    if (!child) child = breedNew(pl.strain, father.strain);     // keine feste Tochter -> neue Sorte (35. Züchten)
     if (!STATE.discovered) STATE.discovered = [];
     const isNew = known && !STATE.discovered.includes(child);
     if (!STATE.discovered.includes(child)) STATE.discovered.push(child);
@@ -2626,7 +2626,7 @@ function harvestText(res) {
   let t = res.bud ? "Ernte eingefahren!\n" + budInfo(res.bud) : "";
   if (res.seeds) {
     const s = STRAINS[res.seeds.strain];
-    t += (t ? "\n" : "") + `Die Pflanze wurde bestäubt und hat statt Blüten Samen gebildet: ${res.seeds.n}× ${s.name}-Samen (${res.seeds.fem ? "feminisiert" : "regulär"})!`;
+    t += (t ? "\n" : "") + (s.unnamed ? `Die Pflanze wurde bestäubt und hat ${res.seeds.n} Samen einer NEUEN SORTE gebildet (${res.seeds.fem ? "feminisiert" : "regulär"})!\nGleich darfst du ihr einen Namen geben.` : `Die Pflanze wurde bestäubt und hat statt Blüten Samen gebildet: ${res.seeds.n}× ${s.name}-Samen (${res.seeds.fem ? "feminisiert" : "regulär"})!`);
     if (res.seeds.isNew) t += `\nNeue Sorte entdeckt: ${s.name} (${RARITIES[s.rarity].name})!`;
   }
   return t;
@@ -2889,7 +2889,7 @@ function harvestAll(tent) {
   const lines = [];
   if (plants) lines.push(`Du hast ${plants} ${plants === 1 ? "Pflanze" : "Pflanzen"} geerntet.`);
   if (grams) lines.push(`Blüten: ${fmtG(Math.round(grams * 10) / 10)} · Wert ${euro(Math.round(value * 100) / 100)}`);
-  for (const [k, n] of Object.entries(seeds)) { const [st, f] = k.split("|"); lines.push(`Bestäubt – statt Blüten: ${n}× ${STRAINS[st].name}-Samen (${f === "f" ? "feminisiert" : "regulär"})`); }
+  for (const [k, n] of Object.entries(seeds)) { const [st, f] = k.split("|"); lines.push(STRAINS[st].unnamed ? `Bestäubt – ${n} Samen einer NEUEN SORTE (${f === "f" ? "feminisiert" : "regulär"}) – gleich darfst du sie benennen!` : `Bestäubt – statt Blüten: ${n}× ${STRAINS[st].name}-Samen (${f === "f" ? "feminisiert" : "regulär"})`); }
   for (const k of fresh) lines.push(`Neue Sorte entdeckt: ${STRAINS[k].name} (${RARITIES[STRAINS[k].rarity].name})!`);
   if (males) lines.push(`${males} ${males === 1 ? "Pollen-Pflanze" : "Pollen-Pflanzen"} (♂) entfernt.`);
   if (stashG) { lines.push(`Inventar voll – ${fmtG(Math.round(stashG * 10) / 10)} liegen im Schrank.`); showBanner("Inventar voll – Ernte im Schrank"); }
@@ -5490,7 +5490,7 @@ function stefParents(id) {
 function stefPick() {
   const n = stefOrderNo(), done = [STEF_STRAIN, STEF_STRAIN2, ...(STATE.stefOrders || [])];
   const tiers = n <= 5 ? [2] : n <= 15 ? [3] : [1, 2, 3, 4];
-  let pool = Object.keys(STRAINS).filter(k => tiers.includes(STRAINS[k].tier));
+  let pool = Object.keys(STRAINS).filter(k => !STRAINS[k].custom && tiers.includes(STRAINS[k].tier));
   pool = n <= 15 ? pool.filter(k => !done.includes(k)) : pool.filter(k => k !== done[done.length - 1]);
   return pool[Math.floor(Math.random() * pool.length)];
 }
@@ -7303,7 +7303,7 @@ function marlonWish() {
 function marlonPick() {
   const n = 2 + (STATE.marlonOrders || []).length, done = [MARLON_STRAIN, ...(STATE.marlonOrders || [])];
   const tiers = n <= 6 ? [2] : n <= 16 ? [3] : [1, 2, 3, 4];
-  let pool = Object.keys(STRAINS).filter(k => tiers.includes(STRAINS[k].tier));
+  let pool = Object.keys(STRAINS).filter(k => !STRAINS[k].custom && tiers.includes(STRAINS[k].tier));
   pool = n <= 16 ? pool.filter(k => !done.includes(k)) : pool.filter(k => k !== done[done.length - 1]);
   return pool[Math.floor(Math.random() * pool.length)];
 }
@@ -8974,7 +8974,7 @@ function renderDexDetail(sc) {
     dexBox(tx - 3, y0, tw2 + 5, bottom - y0, "#f8f8f8", DEX.ink);
     const lines = [
       [RARITIES[s.rarity].name + " · Tier " + s.tier, RARITIES[s.rarity].color],
-      [s.parents ? "Kreuzung" : s.shop === 2 ? "Startsorte · Grow Shop Jacksonville" : "Startsorte · Growshop", DEX.ink],
+      [s.custom ? `Gezüchtet von ${byBreeder(s)}` : s.parents ? "Kreuzung" : s.shop === 2 ? "Startsorte · Grow Shop Jacksonville" : "Startsorte · Growshop", DEX.ink],
       ...(s.parents ? [] : wrapText(s.role, tw2).map(l => [l, "#606068"])),
       [`Blütezeit ${s.growMin} min · Ernte ${s.size}`, DEX.ink],
       [isGrown(id) ? "✓ Angebaut" : "Noch nicht angebaut", isGrown(id) ? "#2f7a45" : "#909098"],
@@ -9164,6 +9164,221 @@ function pollenUse(tent, pl) {
     },
   });
 }
+/* =====================================================================
+   35. EIGENE SORTEN ZÜCHTEN
+   ---------------------------------------------------------------------
+   Jede Kreuzung OHNE festes Ergebnis (also nicht eine der 150 Sorten)
+   ergibt eine NEUE Sorte. Ihre Werte werden einmal gewürfelt: Mittelwert
+   der Eltern + Zufall. Aus allen Werten zusammen (Gesamtpunktzahl) ergibt
+   sich das Tier (max. T5). Wer sie zuerst züchtet, gibt ihr einen Namen
+   (3–20 Zeichen, einmalig). Online landet sie in der Datenbank mit dem
+   Namen des Züchters – züchtet jemand anderes dieselbe Kreuzung, hat sie
+   schon Namen und Werte. Das Sortenverzeichnis wird dadurch immer länger.
+   Ohne Datenbank (Claude-Version) bleibt alles im eigenen Spielstand.
+   ===================================================================== */
+const BASE_STRAIN_COUNT = 150;
+const NAME_MIN = 3, NAME_MAX = 20, NAME_RX = /^[A-Za-z0-9ÄÖÜäöüß #]+$/;
+// Wurf um den Mittelwert der Eltern
+const ROLL = { thc: 3, terp: 0.3, yieldPct: 0.15, quality: 8, growPct: 0.10 };
+// Gewichte der Gesamtpunktzahl
+const SCORE_W = { thc: 0.35, terp: 0.2, quality: 0.2, yield: 0.15, speed: 0.1 };
+
+// Bereiche und Tier-Grenzen aus den 150 festen Sorten ableiten
+const BASE_IDS = Object.keys(STRAINS).filter(k => STRAINS[k].nr <= BASE_STRAIN_COUNT);
+const RANGE = {};
+for (const [k, f] of Object.entries({ thc: s => s.thcMax, terp: s => s.terpMax, quality: s => s.quality, yield: s => s.yield, grow: s => s.growMinBase })) {
+  const v = BASE_IDS.map(id => f(STRAINS[id]));
+  RANGE[k] = [Math.min(...v), Math.max(...v)];
+}
+const norm = (v, [a, b]) => b > a ? clamp((v - a) / (b - a), 0, 1) : 0.5;
+function strainScore(d) {
+  return SCORE_W.thc * norm(d.thcMax, RANGE.thc) + SCORE_W.terp * norm(d.terpMax, RANGE.terp) + SCORE_W.quality * norm(d.quality, RANGE.quality)
+    + SCORE_W.yield * norm(d.yield, RANGE.yield) + SCORE_W.speed * (1 - norm(d.growMinBase, RANGE.grow));
+}
+// Grenze zwischen zwei Tiers = Mitte zwischen den Durchschnitts-Punktzahlen der festen Sorten
+const TIER_LIMITS = (() => {
+  const avg = [1, 2, 3, 4, 5].map(t => { const l = BASE_IDS.filter(id => STRAINS[id].tier === t).map(id => strainScore(STRAINS[id])); return l.reduce((a, b) => a + b, 0) / l.length; });
+  return [0, 1, 2, 3].map(i => (avg[i] + avg[i + 1]) / 2);
+})();
+const tierFromScore = sc => 1 + TIER_LIMITS.filter(l => sc >= l).length;
+
+// kurze, für alle Spieler gleiche ID aus den Eltern
+function customId(a, b) {
+  const key = crossKey(a, b); let h1 = 0x811c9dc5, h2 = 0x01000193;
+  for (let i = 0; i < key.length; i++) { const c = key.charCodeAt(i); h1 = Math.imul(h1 ^ c, 16777619) >>> 0; h2 = Math.imul(h2 + c, 2246822519) >>> 0; }
+  return "x" + h1.toString(36) + h2.toString(36);
+}
+// Werte würfeln
+function rollCross(a, b) {
+  const A = STRAINS[a], B = STRAINS[b], avg = f => (f(A) + f(B)) / 2;
+  const r = (m, d) => m + rnd(-d, d);
+  const d = {
+    parents: [a, b],
+    thcMax: Math.round(clamp(r(avg(s => s.thcMax), ROLL.thc), RANGE.thc[0], THC_CAP) * 10) / 10,
+    terpMax: Math.round(clamp(r(avg(s => s.terpMax), ROLL.terp), 1.0, TERP_CAP) * 100) / 100,
+    quality: Math.round(clamp(r(avg(s => s.quality), ROLL.quality), RANGE.quality[0], 95)),
+    yield: Math.round(clamp(avg(s => s.yield) * (1 + rnd(-ROLL.yieldPct, ROLL.yieldPct)), RANGE.yield[0], RANGE.yield[1])),
+    growMinBase: Math.round(clamp(avg(s => s.growMinBase) * (1 + rnd(-ROLL.growPct, ROLL.growPct)), RANGE.grow[0], RANGE.grow[1]) * 10) / 10,
+    terp: Math.random() < 0.5 ? A.terp : B.terp,
+    color: mixColor(mixColor(A.color, B.color), Math.random() < 0.5 ? A.color : B.color),
+  };
+  d.strength = Math.round(d.thcMax * 0.6 * 10) / 10;
+  d.tier = tierFromScore(strainScore(d));
+  return d;
+}
+// Sorte ins Spiel eintragen (Sortenverzeichnis, Samen, Pollen, Kreuzungstabelle)
+function registerStrain(e) {
+  const d = e.data, [a, b] = d.parents;
+  if (!STRAINS[a] || !STRAINS[b]) return false;
+  const tier = clamp(d.tier, 1, 5), T = GEN_TIER[tier - 1];
+  const s = STRAINS[e.id] = Object.assign(STRAINS[e.id] || {}, {
+    nr: e.nr || STRAINS[e.id]?.nr || 0, name: e.name, type: "Kreuzung", role: `${STRAINS[a].name} × ${STRAINS[b].name}`,
+    tier, rarity: T.rarity, value: T.value, buyable: false, parents: [a, b], custom: true, breeder: e.breeder, unnamed: !!e.unnamed,
+    quality: d.quality, strength: d.strength, yield: d.yield, size: sizeFromGrams(d.yield), color: d.color,
+    growMinBase: d.growMinBase, _gb: d.growMinBase, growMin: Math.max(1, Math.round(d.growMinBase * GROW_TIME_FACTOR * Math.pow(GROW_TIER_STEP, tier - 1))),
+    thcMax: d.thcMax, terpMax: d.terpMax, terp: d.terp, seedPrice: 0,
+  });
+  delete s._kind;
+  CROSSES[crossKey(a, b)] = e.id;
+  ITEMS["seed_" + e.id + "_f"] = { cat: "seed", name: s.name + " ♀", price: 0, strain: e.id, sex: "f", desc: `Feminisierte Samen deiner Zucht. ca. ${s.growMin} min.` };
+  ITEMS["seed_" + e.id + "_r"] = { cat: "seed", name: s.name + " (reg.)", price: 0, strain: e.id, sex: "r", desc: `Reguläre Samen deiner Zucht: 50/50, +25 % Ertrag. ca. ${s.growMin} min.` };
+  ITEMS["pollen_" + e.id] = { cat: "pollen", name: "Pollen: " + s.name, price: 0, strain: e.id, fem: false, desc: `Pollen eines ${s.name}-Männchens.` };
+  ITEMS["pollen_" + e.id + "_f"] = { cat: "pollen", name: "Pollen: " + s.name + " (fem.)", price: 0, strain: e.id, fem: true, desc: `Pollen einer besprühten ${s.name}.` };
+  if (!STRAIN_LIST.includes(e.id)) STRAIN_LIST.push(e.id);
+  return true;
+}
+// Nummern im Sortenverzeichnis: 151, 152 … (Datenbank-Reihenfolge, danach eigene ohne Datenbank)
+function renumberCustom() {
+  const db = (window.DB_STRAINS || []).map(r => r.id_custom);
+  const own = (STATE && STATE.customStrains || []).map(e => e.id).filter(id => !db.includes(id));
+  [...db, ...own].forEach((id, i) => { if (STRAINS[id]) STRAINS[id].nr = BASE_STRAIN_COUNT + 1 + i; });
+  STRAIN_LIST.sort((a, b) => STRAINS[a].nr - STRAINS[b].nr);
+}
+// Datenbank-Zeile -> Eintrag
+const dbEntry = r => ({ id: r.id_custom || r.data.id, key: r.cross_key, name: r.name, breeder: r.breeder, data: r.data, synced: true });
+function registerAll(raw) {
+  // erst die Datenbank, dann die eigenen (mehrfach, weil Eltern selbst gezüchtet sein können)
+  const list = [...(window.DB_STRAINS || []).map(dbEntry)];
+  let own = [];
+  try { own = (JSON.parse(raw || "null") || {}).customStrains || []; } catch (e) { }
+  for (const e of own) if (!list.some(x => x.id === e.id)) list.push(e);
+  for (let pass = 0; pass < 6; pass++) for (const e of list) if (!STRAINS[e.id] || STRAINS[e.id].custom) registerStrain(e);
+}
+// Beim Laden: Sorten eintragen, BEVOR der Spielstand gelesen wird
+const _loadGameBR = loadGame;
+loadGame = function () {
+  let raw = GAME.cloudRaw; try { if (!raw) raw = localStorage.getItem(SAVE_KEY); } catch (e) { }
+  registerAll(raw);
+  const r = _loadGameBR();
+  if (STATE) {
+    if (!STATE.customStrains) STATE.customStrains = [];
+    if (!STATE.nameQueue) STATE.nameQueue = [];
+    // Einträge aus der Datenbank haben Vorrang (Name + Werte)
+    for (const r2 of (window.DB_STRAINS || [])) {
+      const e = STATE.customStrains.find(x => x.id === r2.id_custom);
+      if (e) Object.assign(e, dbEntry(r2), { unnamed: false });
+      STATE.nameQueue = STATE.nameQueue.filter(id => id !== r2.id_custom || !e);
+    }
+    renumberCustom();
+  }
+  return r;
+};
+
+/* ---------------------------- ZÜCHTEN ---------------------------- */
+const byBreeder = s => s.breeder === "Du" ? "dir" : s.breeder;
+const breederName = () => (typeof ONLINE !== "undefined" && ONLINE.name) || "Du";
+function breedNew(mother, father) {
+  const id = customId(mother, father);
+  if (STRAINS[id]) return id;
+  const e = { id, key: crossKey(mother, father), name: "Unbenannte Kreuzung", breeder: breederName(), data: rollCross(mother, father), synced: false, unnamed: true };
+  STATE.customStrains.push(e); registerStrain(e); renumberCustom();
+  STATE.nameQueue.push(id); saveGame();
+  return id;
+}
+const nameTaken = (name, exceptId) => Object.entries(STRAINS).some(([id, s]) => id !== exceptId && !s.unnamed && s.name.trim().toLowerCase() === name.trim().toLowerCase());
+function applyName(e, name) {
+  e.name = name; e.unnamed = false;
+  registerStrain(e); renumberCustom(); saveGame();
+}
+
+/* ---------------------------- NAMEN GEBEN ---------------------------- */
+let NAMING = false;
+const _updateBR = update;
+update = function (dt) {
+  _updateBR(dt);
+  if (STATE && STATE.nameQueue && STATE.nameQueue.length && !NAMING && !GAME.dialog && !GAME.fade) startNaming(STATE.nameQueue[0]);
+};
+async function startNaming(id) {
+  NAMING = true;
+  const e = STATE.customStrains.find(x => x.id === id);
+  if (!e) { STATE.nameQueue.shift(); NAMING = false; return; }
+  // Online: hat schon jemand diese Kreuzung gezüchtet?
+  if (window.STRAIN_DB) {
+    try {
+      const row = await window.STRAIN_DB.findCross(e.key);
+      if (row) { adoptDb(e, row); STATE.nameQueue.shift(); saveGame(); NAMING = false;
+        openDialog(`Diese Kreuzung hat schon ${row.breeder} gezüchtet:\n„${row.name}“ (Tier ${STRAINS[id].tier}). Sie steht jetzt in deinem Sortenverzeichnis.`); return; }
+    } catch (err) { }
+  }
+  nameBox(e);
+}
+function adoptDb(e, row) {
+  if (!(window.DB_STRAINS || []).some(r => r.id_custom === row.id_custom)) (window.DB_STRAINS = window.DB_STRAINS || []).push(row);
+  Object.assign(e, dbEntry(row), { unnamed: false });
+  registerStrain(e); renumberCustom();
+}
+function nameBox(e) {
+  const s = STRAINS[e.id];
+  const el = document.createElement("div");
+  el.id = "namebox";
+  el.style.cssText = "position:fixed;inset:0;z-index:60;background:rgba(10,10,20,.92);display:flex;align-items:center;justify-content:center;padding:16px;font-family:monospace";
+  el.innerHTML = `<div style="width:100%;max-width:380px;background:#f4f4f8;border:4px solid #383840;box-shadow:0 0 0 4px #d83838;border-radius:6px;padding:14px;color:#222">
+    <div style="font-weight:bold;font-size:17px;color:#d83838">Neue Sorte gezüchtet!</div>
+    <div style="font-size:13px;margin:6px 0 2px">${STRAINS[s.parents[0]].name} × ${STRAINS[s.parents[1]].name}</div>
+    <div style="font-size:13px;margin-bottom:8px">Tier ${s.tier} · ${RARITIES[s.rarity].name} · THC bis ${String(s.thcMax).replace(".", ",")} % · ${s.yield} g · ${s.growMin} min</div>
+    <label style="font-size:13px;font-weight:bold">Wie soll sie heißen?
+      <input id="nb-name" maxlength="${NAME_MAX}" autocomplete="off" spellcheck="false" style="display:block;width:100%;margin-top:4px;padding:10px;font:16px monospace;border:3px solid #383840;border-radius:4px;-webkit-user-select:text;user-select:text"></label>
+    <div style="font-size:11px;color:#606068;margin-top:4px">${NAME_MIN}–${NAME_MAX} Zeichen: Buchstaben, Zahlen, Leerzeichen und #. Der Name muss einmalig sein${window.STRAIN_DB ? " – er gilt für alle Spieler" : ""}.</div>
+    <div id="nb-msg" style="min-height:16px;font-size:12px;color:#b02828;font-weight:bold;margin:8px 0"></div>
+    <button id="nb-go" style="width:100%;padding:12px;font:bold 15px monospace;background:#2f7a45;color:#fff;border:3px solid #1c4a2a;border-radius:4px">Taufen</button></div>`;
+  document.body.appendChild(el);
+  ["keydown", "keyup"].forEach(ev => el.addEventListener(ev, x => x.stopPropagation()));
+  const inp = el.querySelector("#nb-name"), btn = el.querySelector("#nb-go"), msg = t => el.querySelector("#nb-msg").textContent = t;
+  setTimeout(() => inp.focus(), 50);
+  const go = async () => {
+    const name = inp.value.trim().replace(/\s+/g, " ");
+    if (name.length < NAME_MIN || name.length > NAME_MAX) return msg(`Der Name braucht ${NAME_MIN}–${NAME_MAX} Zeichen.`);
+    if (!NAME_RX.test(name)) return msg("Erlaubt sind nur Buchstaben, Zahlen, Leerzeichen und #.");
+    if (nameTaken(name, e.id)) return msg("Diesen Namen gibt es schon.");
+    btn.disabled = true; msg("");
+    if (window.STRAIN_DB) {
+      const res = await window.STRAIN_DB.insert(e, name);
+      if (res.taken === "name") { btn.disabled = false; return msg("Diesen Namen hat schon jemand anderes vergeben."); }
+      if (res.row && res.taken === "cross") {               // jemand war schneller
+        el.remove(); adoptDb(e, res.row); STATE.nameQueue.shift(); saveGame(); NAMING = false;
+        openDialog(`Da war jemand schneller: ${res.row.breeder} hat diese Kreuzung gerade „${res.row.name}“ genannt.`); return;
+      }
+      if (res.row) { adoptDb(e, res.row); e.synced = true; }
+      else { e.synced = false; applyName(e, name); }        // keine Verbindung: später hochladen
+    }
+    applyName(e, name);
+    el.remove(); STATE.nameQueue.shift(); saveGame(); NAMING = false; Sound.floor();
+    openDialog(`Du hast die neue Sorte „${name}“ getauft!\nSie steht als Nr. ${STRAINS[e.id].nr} im Sortenverzeichnis – gezüchtet von ${byBreeder(STRAINS[e.id])}.`);
+  };
+  btn.onclick = go;
+  inp.addEventListener("keydown", x => { if (x.key === "Enter") go(); });
+}
+// Nicht hochgeladene Namen später nachreichen (online)
+setInterval(async () => {
+  if (!window.STRAIN_DB || !STATE || !STATE.customStrains) return;
+  for (const e of STATE.customStrains.filter(x => !x.synced && !x.unnamed)) {
+    const res = await window.STRAIN_DB.insert(e, e.name).catch(() => ({}));
+    if (res.row) { adoptDb(e, res.row); saveGame(); if (res.taken === "cross" && res.row.name !== e.name) showBanner(`Sorte heißt jetzt „${res.row.name}“`); }
+    else if (res.taken === "name") { e.unnamed = true; STATE.nameQueue.push(e.id); saveGame(); }
+  }
+}, 60000);
+
+// Wünsche von Stefanie/Marlon nur aus den 150 festen Sorten (eigene Zuchten kennt sonst keiner)
 
 /* ---------------------------------------------------------------------
    START
@@ -9295,6 +9510,11 @@ async function afterLogin(user) {
     if (raw) localStorage.setItem(SAVE_KEY, raw); else localStorage.removeItem(SAVE_KEY);
     localStorage.setItem(OWNER_KEY, user.id);
   } catch (e) { GAME.cloudRaw = raw; }
+  // Alle gezüchteten Sorten aller Spieler laden (Sortenverzeichnis)
+  loginMsg("Sortenverzeichnis wird geladen …");
+  const st = await ONLINE.sb.from("strains").select("id, cross_key, name, data, breeder").order("id", { ascending: true });
+  if (st.error) { loginMsg("Sortenverzeichnis konnte nicht geladen werden (" + st.error.message + "). Bitte nochmal versuchen."); return false; }
+  window.DB_STRAINS = st.data.map(r => ({ ...r, id_custom: r.data.id }));
   ONLINE.ok = true;
   ONLINE.last = data ? JSON.stringify(data.data) : "";
   const el = document.getElementById("login"); if (el) el.remove();
@@ -9304,6 +9524,25 @@ async function afterLogin(user) {
   setTimeout(() => showBanner("Hallo " + ONLINE.name + "!"), 900);
   return true;
 }
+
+/* ---------------------------- GEZÜCHTETE SORTEN (Datenbank) ---------------------------- */
+const rowOut = r => r && ({ ...r, id_custom: r.data.id });
+window.STRAIN_DB = {
+  async findCross(key) {
+    const { data, error } = await ONLINE.sb.from("strains").select("id, cross_key, name, data, breeder").eq("cross_key", key).maybeSingle();
+    if (error) throw error;
+    return rowOut(data);
+  },
+  // -> { row } bei Erfolg · { taken: "name" } · { taken: "cross", row } · {} bei Verbindungsfehler
+  async insert(e, name) {
+    const { data, error } = await ONLINE.sb.from("strains").insert({ cross_key: e.key, name, data: { ...e.data, id: e.id } }).select("id, cross_key, name, data, breeder").single();
+    if (!error) return { row: rowOut(data) };
+    const m = (error.message || "") + " " + (error.details || "");
+    if (error.code === "23505" && /name/i.test(m)) return { taken: "name" };
+    if (error.code === "23505") { try { return { taken: "cross", row: await window.STRAIN_DB.findCross(e.key) }; } catch (x) { return {}; } }
+    return {};
+  },
+};
 
 /* ---------------------------- SPEICHERN ---------------------------- */
 async function onlinePush(force) {
