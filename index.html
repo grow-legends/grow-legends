@@ -2502,7 +2502,7 @@ function simulatePlant(pl, t, tent) {
   const dt = Math.max(0, t - pl.last); pl.last = t;
   if (!dt) return;
   const auto = !!tentAddon(tent, "water");
-  const drain = 100 / (WATER_EMPTY_MIN * 60000);          // Wasser-Verlust pro ms
+  const drain = 100 / (WATER_EMPTY_MIN * 60000) / (1 + perkVal("water") / 100);          // Wasser-Verlust pro ms
   const total = plantGrowCapMs(pl), speed = plantSpeed(pl, tent);
   const wet = auto ? dt : Math.min(dt, pl.water / drain);   // so lange war noch Wasser da
   if (pl.growMs < total) {
@@ -2581,7 +2581,7 @@ function harvestBud(tent, slot) {
   // Seltenheit gehört fest zur Sorte (Stufe), Ausnahme: fest vorgegeben (Bruder)
   const r = pl.rarity !== undefined ? pl.rarity : s.rarity;
   const strength = Math.round((s.strength * (0.8 + 0.4 * q / 100) + rnd(-1, 1)) * 10) / 10;
-  const grams = Math.round(s.yield * yieldWaterFactor(dry) * (fv ? fv.yieldM : 1) * (fb ? fb.yieldM : 1) * soil.yieldM * lamp.yieldM * (pl.reg ? REG_YIELD_BONUS : 1) * rnd(0.95, 1.05) * 10) / 10;
+  const grams = Math.round(s.yield * yieldWaterFactor(dry) * (fv ? fv.yieldM : 1) * (fb ? fb.yieldM : 1) * soil.yieldM * lamp.yieldM * (pl.reg ? REG_YIELD_BONUS : 1) * (pl.owner ? 1 : 1 + perkVal("yield") / 100) * rnd(0.95, 1.05) * 10) / 10;
   const perGram = pricePerGram(pl.strain, q);
   const bud = { id: STATE.nextBudId++, strain: pl.strain, rarity: r, quality: q, strength, grams, value: Math.round(perGram * grams * 100) / 100, harvestedAt: now() };
   if (pl.fixed) Object.assign(bud, { quality: pl.fixed.quality, strength: pl.fixed.strength, grams: pl.fixed.grams, value: pl.fixed.grams * pl.fixed.perGram });
@@ -2619,7 +2619,7 @@ function harvestPlant(tent, slot) {
     const isNew = known && !STATE.discovered.includes(child);
     if (!STATE.discovered.includes(child)) STATE.discovered.push(child);
     // 5–20 Samen: je weniger Wassermangel die Mutter hatte, desto mehr (+ kleiner Zufall)
-    const n = Math.round(clamp(BRED_SEEDS_MIN + (BRED_SEEDS_MAX - BRED_SEEDS_MIN) * (1 - plantDryShare(pl)) + rnd(-2, 2), BRED_SEEDS_MIN, BRED_SEEDS_MAX));
+    const n = Math.round(clamp(BRED_SEEDS_MIN + (BRED_SEEDS_MAX - BRED_SEEDS_MIN) * (1 - plantDryShare(pl)) + rnd(-2, 2), BRED_SEEDS_MIN, BRED_SEEDS_MAX)) + perkVal("seeds");
     invAdd("seed_" + child + (fem ? "_f" : "_r"), n);
     tent.plants[slot] = null; saveGame();
     seeds = { n, isNew, strain: child, fem };
@@ -2831,11 +2831,12 @@ function openSlotActions(slot) {
     onChoose(it) {
       if (it.id === "water") {
         const over = pl.water > 80;
-        pl.water = 100; saveGame(); Sound.select();
+        pl.water = 100; gainXP(1); saveGame(); Sound.select();
         openDialog(over ? "Die Erde war noch feucht. Du hast trotzdem gegossen." : "Du hast die Pflanze gegossen.");
       } else if (it.id === "waterAll") {
         const list = tent.plants.filter(Boolean);
         for (const p of list) p.water = 100;
+        gainXP(list.length);
         saveGame(); Sound.select();
         openDialog(`Du hast alle ${list.length} Pflanzen im Zelt gegossen.`);
       } else if (it.id === "fert") {
@@ -2843,7 +2844,7 @@ function openSlotActions(slot) {
           title: "DÜNGER WÄHLEN",
           items: invOf("fert").map(id => ({ label: ITEMS[id].name, right: "×" + invCount(id), id })),
           onChoose(f) {
-            pl[fertPhase] = f.id; invAdd(f.id, -1); saveGame();
+            pl[fertPhase] = f.id; invAdd(f.id, -1); gainXP(2); saveGame();
             openDialog(`${ITEMS[f.id].name} für die ${fertPhase === "fertVeg" ? "Wachstumsphase" : "Blütephase"} gegeben.`);
           },
         });
@@ -2859,7 +2860,7 @@ function openSlotActions(slot) {
           useSts(); Sound.select();
           const left = stsAvailable();
           if (pl.sex === "m") { saveGame(); openDialog(`Die Pflanze ist männlich – das Silberthiosulfat hatte keine Wirkung.\nNoch ${left} Anwendung${left === 1 ? "" : "en"}.`); return; }
-          pl.sts = true; saveGame();
+          pl.sts = true; gainXP(3); saveGame();
           openDialog(`Du hast ${STRAINS[pl.strain].name} besprüht. Sie wird jetzt männlich und bildet Pollen.\nAlle weiblichen Pflanzen, die gleichzeitig im Zelt blühen, bekommen feminisierte Samen.\nNoch ${left} Anwendung${left === 1 ? "" : "en"}.`);
         });
       } else if (it.id === "pollenTake") {
@@ -2885,6 +2886,9 @@ function fertAll(tent, fertId) {
   for (const p of list) {
     if (invCount(fertId) < 1) break;
     p[fertPhaseOf(p)] = fertId; invAdd(fertId, -1); n++;
+  }
+  gainXP(2 * n);
+  {
   }
   saveGame(); Sound.select();
   let msg = `Du hast ${n} ${n === 1 ? "Pflanze" : "Pflanzen"} mit ${ITEMS[fertId].name} gedüngt.`;
@@ -4984,6 +4988,7 @@ function openRunnerGive() {
         openDialog(`Fernando: ${fmtG(it.g)} … Das bringt ${euro(it.v)}, abzüglich meiner ${Math.round(RUNNER_CUT * 100)} % bleiben ${euro(payout)} für dich.${queueTxt} Ich melde mich per SMS.`, ["Abgeben", "Abbrechen"], c => {
           if (c !== 0) return;
           STATE.buds = STATE.buds.filter(b => !picked.has(b.id));
+          gainXP(Math.max(1, Math.round(it.g / 10)));
           runnerJobs().push({ runner: "fernando", grams: it.g, payout, startAt: start, readyAt: start + mins * 60000, notified: false });
           saveGame(); Sound.confirm(); closeMenu();
           openDialog(`Du hast ${fmtG(it.g)} an Fernando abgegeben.`);
@@ -7076,6 +7081,7 @@ function makeOrder(p) {
     if (Math.random() < 0.5) Object.assign(o, { grams: 10, strain: wantStrain(), spot: freeSpot(), until: t + 120, rush: true });
     else Object.assign(o, { grams: 30, minRarity: epicUnlocked() ? 3 : 2, spot: freeSpot(), until: t + 180, rush: true });
   }
+  o.grams = Math.round(o.grams * repOrderFactor() / 5) * 5;          // Ruf: größere Aufträge (34. Fortschritt)
   return o;
 }
 const clockAt = min => { const m = ((Math.floor(min) % 1440) + 1440) % 1440; return String(Math.floor(m / 60)).padStart(2, "0") + ":" + String(m % 60).padStart(2, "0"); };
@@ -7113,7 +7119,7 @@ function streetCheck() {
       addMessage(p.name, st.order.rush ? "Zu spät, bro. Hab's mir woanders geholt." : "Hat sich erledigt, hab's woanders bekommen.");
       smsPing(p.name);
       streetLog(`✗ ${p.name}: ${orderWhat(st.order)} – abgelaufen`);
-      st.order = null; st.nextAt = t + rint(...STREET_GAP); changed = true;
+      st.order = null; st.nextAt = t + streetGap(); changed = true; repChange(-2);
     }
     if (!st.order && t >= st.nextAt && !GAME.fade) {
       st.order = makeOrder(p);
@@ -7160,7 +7166,7 @@ function talkStreet(p) {
   const st = street()[p.id];
   if (!st.met) {
     openDialog(`???: Hey, du! Ja, du. Man hört, du hast gutes Zeug.\n${p.name}: ${p.hello}\n${p.name}: Hier, meine Nummer. Ich meld mich per SMS, wenn ich was brauche – und dann steh ich da, wo ich's dir schreibe.`, null, () => {
-      st.met = true; st.nextAt = nowMin() + rint(...STREET_GAP); saveGame();
+      st.met = true; st.nextAt = nowMin() + streetGap(); saveGame();
       showBanner("Neuer Kontakt: " + p.name);
       refreshStreetMaps();
       if (STREET_PEOPLE.filter(q => street()[q.id].met).length === 1)
@@ -7216,7 +7222,8 @@ function finishStreet(p, o, parts, alt) {
   const pay = Math.round(value * o.factor * negoFactor() * (alt ? 1 - STREET_ALT_CUT : 1) * 100) / 100;
   STATE.money += pay;
   streetLog(`✓ ${p.name}: ${fmtG(grams)} · ${euro(pay)}`);
-  st.order = null; st.done++; st.nextAt = nowMin() + rint(...STREET_GAP);
+  st.order = null; st.done++; st.nextAt = nowMin() + streetGap();
+  gainXP(orderXP(o)); repChange(o.rush ? 2 : 1);
   saveGame(); Sound.floor();
   refreshStreetMaps();
   openDialog(`Du hast ${fmtG(grams)} an ${p.name} verkauft: ${euro(pay)} (${Math.round(o.factor * 100)} % von ${euro(Math.round(value * 100) / 100)}${alt ? `, Alternative −${Math.round(STREET_ALT_CUT * 100)} %` : ""}).\n${p.name}: Top, bro! Ich meld mich wieder.`);
@@ -7909,7 +7916,7 @@ const FURNITURE = {
 };
 CAT_LABELS.deco = "Deko"; CAT_LABELS.cabinet = "Schränke";
 for (const [id, f] of Object.entries(FURNITURE)) ITEMS[id] = { cat: f.cat, name: f.name, price: f.price,
-  desc: f.cat === "deco" ? `Deko mit Aura ${f.aura} (wirkt später auf XP und Reputation). Aufstellen über Menü → Einrichten.` : `Schrank: +${f.storage / 1000} kg Lagerplatz für Blüten, sobald er in deiner Wohnung steht.` };
+  desc: f.cat === "deco" ? `Deko mit Aura ${f.aura}: steigert deinen Ruf – größere Kundenaufträge. Aufstellen über Menü → Einrichten.` : `Schrank: +${f.storage / 1000} kg Lagerplatz für Blüten, sobald er in deiner Wohnung steht.` };
 function decor() { return STATE.decor || (STATE.decor = []); }
 const placedDecor = () => decor().filter(d => isHomeMap(d.home));
 function auraTotal() { return placedDecor().reduce((n, d) => n + (FURNITURE[d.item].aura || 0), 0); }
@@ -7993,7 +8000,7 @@ openFurnish = function () {
   const tents = invOf("tent"), stored = STATE.storedTents || [];
   openMenu({
     title: "EINRICHTEN",
-    footer: () => `Aura ${auraTotal()} (wirkt später) · Schrank ${fmtKg(stashMax())}`,
+    footer: () => `Aura ${auraTotal()} (Ruf) · Schrank ${fmtKg(stashMax())}`,
     items: [{ label: GAME.mapId === "apartment" ? "Möbel umstellen" : "Umstellen", id: null },
       ...stored.map(t => ({ label: ITEMS[t.item].name + " (eingelagert)", stored: t })),
       ...tents.map(id => ({ label: ITEMS[id].name + " aufstellen", right: "×" + invCount(id), id })),
@@ -9492,7 +9499,8 @@ setInterval(async () => {
      sie auf den Anfang der Jungpflanzen-Phase zurückgesetzt.
      Umtopfen: leerer Platz im Zelt → „Steckling einpflanzen“ (mit Substrat).
    ===================================================================== */
-const LINE_THC = 2, LINE_TERP = 0.2, TESTED_BONUS = 1.05, LAB_TEST_PRICE = 250;
+const LINE_THC = 2, LINE_TERP = 0.2, TESTED_BONUS = 1.05, LAB_TEST_PRICE_BASE = 250;
+const labPrice = () => Math.round(LAB_TEST_PRICE_BASE * (1 - perkVal("lab") / 100));
 const CLONE_FRESH_MIN = 180;     // neuer Steckling: erst nach 3 Minuten (3 Spielstunden) selbst schneidbar
 const freshCutAt = () => gameMinutesTotal() - CLONE_COOLDOWN_MIN + CLONE_FRESH_MIN;
 const CLONE_CAP = 50, CLONE_BATCH = 5, CLONE_COOLDOWN_MIN = 5 * 60, GEL_USES = 25;
@@ -9576,7 +9584,7 @@ loadGame = function () {
 };
 
 /* ---------------------------- NATALIE: TESTS ---------------------------- */
-QUESTS.labor.steps[3] = `Erledigt! Getestete Sorten stehen im Sortenverzeichnis. Weitere Tests bei Natalie: ${LAB_TEST_PRICE} € + ${LAB_SAMPLE_G} g pro Probe.`;
+QUESTS.labor.steps[3] = `Erledigt! Getestete Sorten stehen im Sortenverzeichnis. Weitere Tests bei Natalie: ${labPrice()} € + ${LAB_SAMPLE_G} g pro Probe.`;
 // Proben: je Sorte + Linie ein Eintrag (Blüten des Bruders zählen nicht)
 function labStacks(filterFn) {
   const g = {};
@@ -9629,7 +9637,7 @@ TALKS.natalie = () => {
       "Natalie: Da bist du ja! Die Ergebnisse sind fertig:\n" + list.map(resultLine).join("\n") + "\n" +
       "Natalie: Jede Pflanze aus einem Samen ist eine eigene Linie – mit ihren eigenen Werten. Getestet sind genau diese Linien.\n" +
       "Natalie: Alle Blüten dieser Linien zeigen jetzt ihre Werte und sind 5 % mehr wert. Willst du eine Linie behalten, nimm Stecklinge!\n" +
-      `Natalie: Und wenn du mehr testen lassen willst: ${LAB_TEST_PRICE} € und ${LAB_SAMPLE_G} g pro Probe.`,
+      `Natalie: Und wenn du mehr testen lassen willst: ${labPrice()} € und ${LAB_SAMPLE_G} g pro Probe.`,
       null, () => { applyResults(list); setQuest("labor", 3); Sound.floor(); openDialog(`Im Sortenverzeichnis sind jetzt THC, Terpene und Aroma für ${list.length === 1 ? "1 Sorte" : list.length + " Sorten"} freigeschaltet.`); });
     return;
   }
@@ -9643,20 +9651,20 @@ TALKS.natalie = () => {
     return;
   }
   const opts = ["Probe testen lassen", "Tschüss"];
-  openDialog(`Natalie: Hi! Soll ich was testen? ${LAB_TEST_PRICE} € und ${LAB_SAMPLE_G} g pro Probe – Ergebnis morgen.` + (waiting.length ? `\n(${waiting.length} Probe${waiting.length > 1 ? "n" : ""} läuft gerade.)` : ""), opts, c => {
+  openDialog(`Natalie: Hi! Soll ich was testen? ${labPrice()} € und ${LAB_SAMPLE_G} g pro Probe – Ergebnis morgen.` + (waiting.length ? `\n(${waiting.length} Probe${waiting.length > 1 ? "n" : ""} läuft gerade.)` : ""), opts, c => {
     if (c !== 0) return;
     const list = labStacks(b => !b.tested && !(waiting.some(w => w.strain === b.strain && w.line === (b.line || null))));
     if (!list.length) { openDialog(`Natalie: Du hast keine ungetesteten Blüten mit mindestens ${LAB_SAMPLE_G} g dabei.`); return; }
     openMenu({
-      title: `PROBE · ${euro(LAB_TEST_PRICE)}`,
-      items: list.map(e => ({ label: stackLabel(e), right: fmtG(e.grams), color: RARITIES[STRAINS[e.strain].rarity].color, e, disabled: STATE.money < LAB_TEST_PRICE })),
+      title: `PROBE · ${euro(labPrice())}`,
+      items: list.map(e => ({ label: stackLabel(e), right: fmtG(e.grams), color: RARITIES[STRAINS[e.strain].rarity].color, e, disabled: STATE.money < labPrice() })),
       onChoose(it) {
-        if (STATE.money < LAB_TEST_PRICE) { Sound.bump(); return; }
-        STATE.money -= LAB_TEST_PRICE;
+        if (STATE.money < labPrice()) { Sound.bump(); return; }
+        STATE.money -= labPrice(); gainXP(10);
         const p = takeSample(it.e);
         (STATE.labTests = STATE.labTests || []).push({ strain: p.strain, line: p.line, thc: p.thc, terp: p.terp, day: gameDay() });
         saveGame(); closeAllMenus(); Sound.select();
-        openDialog(`Du hast ${euro(LAB_TEST_PRICE)} bezahlt und ${LAB_SAMPLE_G} g ${stackLabel(it.e)} abgegeben.\nNatalie: Komm morgen wieder, dann ist das Ergebnis da.`);
+        openDialog(`Du hast ${euro(labPrice())} bezahlt und ${LAB_SAMPLE_G} g ${stackLabel(it.e)} abgegeben.\nNatalie: Komm morgen wieder, dann ist das Ergebnis da.`);
       },
     });
   });
@@ -9679,9 +9687,9 @@ const cutReadyIn = pl => Math.max(0, Math.ceil((pl.cutAt || -1e9) + CLONE_COOLDO
 function cutClones(mother, target, after) {
   if (cutReadyIn(mother) > 0) { openDialog(`Diese Pflanze braucht noch ca. ${cutWaitReal(mother)} min, bis sie neue Triebe für Stecklinge hat.`); return false; }
   if (!target) { openDialog("Du brauchst hier ein Stecklingszelt mit freiem Platz (Growshop, 800 €)."); return false; }
-  const n = Math.min(CLONE_BATCH, cutSupplies(), cloneFree(target));
+  const n = Math.min(CLONE_BATCH + perkVal("clones"), cutSupplies(), cloneFree(target));
   if (n < 1) { openDialog(scalpelAvailable() < 1 ? "Du brauchst ein Skalpell zum Schneiden (Growshop, 350 € für 100 Stecklinge)." : gelAvailable() < 1 ? "Du hast kein Bewurzelungsgel mehr (Growshop, 550 € für 25 Stecklinge)." : "Das Stecklingszelt ist voll."); return false; }
-  useGel(n); useScalpel(n); mother.cutAt = gameMinutesTotal();
+  gainXP(2 * n); useGel(n); useScalpel(n); mother.cutAt = gameMinutesTotal();
   if (!mother.line) mother.line = newLine(mother.strain);
   for (let i = 0; i < n; i++) target.clones.push({ strain: mother.strain, line: mother.line, sex: mother.sex === "m" ? "m" : "f", reg: !!mother.reg, cutAt: freshCutAt() });
   saveGame(); Sound.select();
@@ -9743,7 +9751,7 @@ function chooseClone(tent, slot) {
             const c = it.t.clones.splice(k, 1)[0]; invAdd(so.id, -1);
             const pl = { cutAt: c.cutAt != null ? Math.max(c.cutAt, freshCutAt()) : freshCutAt(), strain: c.strain, soil: so.id, plantedAt: now(), last: now(), growMs: 0, water: 100, wetMs: 0, dryMs: 0, fertVeg: null, fertBloom: null, sex: c.sex, reg: c.reg, line: c.line, clone: true };
             pl.growMs = STAGES[JUNG].from * plantTotalMs(pl);
-            tent.plants[s] = pl; return true;
+            tent.plants[s] = pl; gainXP(3); return true;
           };
           const done = n => { saveGame(); closeAllMenus(); Sound.floor(); openDialog(`Du hast ${n} ${n === 1 ? "Steckling" : "Stecklinge"} ${cloneLabel(it.c)} eingepflanzt. ${n === 1 ? "Er wächst" : "Sie wachsen"} ab der Jungpflanze weiter.`); };
           const left = it.t.clones.filter(c => c.strain === it.c.strain && c.line === it.c.line && c.sex === it.c.sex).length;
@@ -10355,6 +10363,223 @@ OBJECT_TYPES.growTent.draw = function (ctx2, x, y, o, t) {
     px(ctx2, "#5ab04a", cx, by + 6 - h, 4, h);
     if (!auto && pl.water <= 0) px(ctx2, "#58a8f0", cx + 1, by - 4, 2, 3);
   });
+};
+/* =====================================================================
+   40. FORTSCHRITT: XP, LEVEL, FERTIGKEITEN, RUF (AURA)
+   ---------------------------------------------------------------------
+   XP gibt es für (fast) alles – je mehr Aufwand, desto mehr:
+     Gießen 1 · Düngen 2 · Besprühen 3 · Pflanzen 3 · Steckling 2 · Pollen 5
+     Ernten 10 × Tier · Labortest 10 · Kundenauftrag nach Aufwand
+     Fernando: 1 XP je 10 g · Neue Sorte entdeckt 50 · Eigene Sorte 150
+     Hauptquest 500 · Nebenquest 200
+   Level: kein Maximum. Level 2 = 100 XP, jedes weitere Level +100 mehr
+   (Level 3 = 300 gesamt, Level 4 = 600 …). Alle 5 Level 1 Fertigkeitspunkt.
+   Fertigkeitsbaum mit 3 Ästen (Grower, Händler, Züchter); innerhalb eines
+   Astes braucht jede Fertigkeit die darüber.
+   Ruf = Aura: Deko (aufgestellt) + Kundenpunkte. 10 Stufen; jede Stufe
+   macht Straßen-Aufträge 10 % größer.
+   ===================================================================== */
+const XP_MAIN_QUEST = 500, XP_SIDE_QUEST = 200, XP_DISCOVER = 50, XP_BRED = 150, XP_POLLEN = 5;
+const xpForLevel = L => 50 * L * (L - 1);                       // gesamt-XP, um Level L zu erreichen
+const levelOf = xp => Math.max(1, Math.floor((1 + Math.sqrt(1 + 8 * Math.max(0, xp) / 100)) / 2));
+const SKILL_EVERY = 5;
+
+// Fertigkeiten: per = Wirkung je Stufe
+const PERKS = [
+  { id: "fast",     tree: "GROWER",  name: "Schnellwuchs",    max: 3, per: 5,  txt: v => `+${v} % Wachstum` },
+  { id: "yield",    tree: "GROWER",  name: "Reiche Ernte",    max: 3, per: 5,  txt: v => `+${v} % Ertrag` },
+  { id: "water",    tree: "GROWER",  name: "Wasserspeicher",  max: 2, per: 25, txt: v => `Wasser +${v} % länger` },
+  { id: "haggle",   tree: "HÄNDLER", name: "Feilschen",       max: 3, per: 3,  txt: v => `+${v} % Verkaufspreis` },
+  { id: "regulars", tree: "HÄNDLER", name: "Stammkunden",     max: 2, per: 20, txt: v => `−${v} % Kunden-Wartezeit` },
+  { id: "mule",     tree: "HÄNDLER", name: "Lastesel",        max: 2, per: 2,  txt: v => `+${v} kg Tasche` },
+  { id: "seeds",    tree: "ZÜCHTER", name: "Samenreich",      max: 2, per: 2,  txt: v => `+${v} Samen je Bestäubung` },
+  { id: "clones",   tree: "ZÜCHTER", name: "Stecklingsprofi", max: 2, per: 1,  txt: v => `+${v} Steckling${v > 1 ? "e" : ""} je Schnitt` },
+  { id: "lab",      tree: "ZÜCHTER", name: "Laborkontakte",   max: 2, per: 20, txt: v => `−${v} % Laborpreis` },
+];
+function perkRank(id) { return STATE && STATE.perks && STATE.perks[id] || 0; }
+// Wirkung einer Fertigkeit (hochgezogen nutzbar, auch vor dieser Datei)
+function perkVal(id) {
+  const per = { fast: 5, yield: 5, water: 25, haggle: 3, regulars: 20, mule: 2, seeds: 2, clones: 1, lab: 20 }[id] || 0;
+  return perkRank(id) * per;
+}
+const perkPrev = p => { const same = PERKS.filter(q => q.tree === p.tree), i = same.indexOf(p); return i > 0 ? same[i - 1] : null; };
+const perkOpen = p => { const pr = perkPrev(p); return !pr || perkRank(pr.id) >= 1; };
+const playerLevel = () => levelOf(STATE && STATE.xp || 0);
+const skillPoints = () => Math.floor(playerLevel() / SKILL_EVERY) - Object.values(STATE.perks || {}).reduce((a, b) => a + b, 0);
+
+/* ---------------------------- XP GEBEN ---------------------------- */
+let XP_SILENT = false;
+function gainXP(n) {
+  if (!STATE || XP_SILENT || !(n > 0)) return;
+  const before = playerLevel();
+  STATE.xp = (STATE.xp || 0) + Math.round(n);
+  GAME.xpPop = { n: Math.round(n) + ((GAME.xpPop && GAME.time - GAME.xpPop.t < 1.2) ? GAME.xpPop.n : 0), t: GAME.time };
+  const after = playerLevel();
+  if (after > before) {
+    const pts = Math.floor(after / SKILL_EVERY) - Math.floor(before / SKILL_EVERY);
+    showBanner(`Level ${after} erreicht!` + (pts ? ` +${pts} Fertigkeitspunkt${pts > 1 ? "e" : ""}` : ""));
+    Sound.tone(523, 0.12, "square", 0.04); Sound.tone(659, 0.12, "square", 0.04, 0.12); Sound.tone(784, 0.25, "square", 0.04, 0.24);
+    if (pts) addMessage("Skills", `Du hast Level ${after} erreicht und ${pts === 1 ? "einen Fertigkeitspunkt" : pts + " Fertigkeitspunkte"} bekommen. Verteile ${pts === 1 ? "ihn" : "sie"} im Smartphone unter „Skills“.`);
+  }
+}
+// Kundenauftrag (Straße): je aufwändiger, desto mehr XP
+function orderXP(o) { return 5 * o.tier + Math.round(o.grams / 2) + (o.rush ? 5 : 0) + (o.strain ? 5 : 0); }
+
+/* ---------------------------- RUF (AURA) ---------------------------- */
+const REP_STEPS = [0, 10, 25, 50, 100, 175, 275, 400, 600, 850];   // Aura ab der eine Stufe beginnt (Stufe 1–10)
+const REP_PER_STEP = 0.10;                                          // +10 % Auftragsgröße je Stufe
+function repChange(n) { if (!STATE) return; STATE.rep = (STATE.rep || 0) + n; saveGame(); }
+function auraPoints() { return Math.max(0, (typeof auraTotal === "function" ? auraTotal() : 0) + (STATE && STATE.rep || 0)); }
+function repStage() { const a = auraPoints(); let s = 1; REP_STEPS.forEach((v, i) => { if (a >= v) s = i + 1; }); return s; }
+function repOrderFactor() { return 1 + REP_PER_STEP * (repStage() - 1); }
+// Stammkunden: Wartezeit bis zum nächsten Auftrag kürzer
+function streetGap() { return Math.round(rint(...STREET_GAP) * (1 - perkVal("regulars") / 100)); }
+
+/* ---------------------------- AUSWIRKUNGEN DER FERTIGKEITEN ---------------------------- */
+const _plantSpeedPG = plantSpeed;
+plantSpeed = function (pl, tent) { return _plantSpeedPG(pl, tent) * (pl && pl.owner ? 1 : 1 + perkVal("fast") / 100); };
+const _negoPG = negoFactor;
+negoFactor = function () { return _negoPG() * (1 + perkVal("haggle") / 100); };
+const _bagMaxPG = bagMax;
+bagMax = function () { return _bagMaxPG() + perkVal("mule") * 1000; };
+
+/* ---------------------------- XP-QUELLEN ---------------------------- */
+const _plantSeedPG = plantSeed;
+plantSeed = function (tent, slot, seedId, soilId) { _plantSeedPG(tent, slot, seedId, soilId); if (tent.plants[slot] && !tent.plants[slot].owner) gainXP(3); };
+const _harvestPlantPG = harvestPlant;
+harvestPlant = function (tent, slot) {
+  const pl = tent.plants[slot];
+  const res = _harvestPlantPG(tent, slot);
+  if (pl && !pl.owner && !res.male && !res.full) gainXP(10 * (STRAINS[pl.strain].tier || 1));
+  return res;
+};
+const _pollenTakePG = pollenTake;
+pollenTake = function (pl) { gainXP(XP_POLLEN); _pollenTakePG(pl); };
+const _pollenApplyPG = pollenApply;
+pollenApply = function (pl, id) { _pollenApplyPG(pl, id); gainXP(XP_POLLEN); };
+// Quests: Abschluss gibt XP; Wünsche von Stefanie/Marlon geben zusätzlich Ruf
+const _setQuestPG = setQuest;
+setQuest = function (id, step, silent) {
+  const prev = questStep(id), last = QUESTS[id] ? QUESTS[id].steps.length - 1 : 1e9;
+  _setQuestPG(id, step, silent);
+  if (prev < last && step >= last) { gainXP(MAIN_QUESTS.includes(id) ? XP_MAIN_QUEST : XP_SIDE_QUEST); if (/^(stefanie|marlon)/.test(id)) repChange(3); }
+};
+// Neue Sorten (entdeckt / selbst gezüchtet und benannt): laufend nachzählen
+const bredCount = () => (STATE.customStrains || []).filter(e => !e.unnamed).length;
+function checkProgressXP() {
+  if (!STATE || XP_SILENT) return;
+  const d = (STATE.discovered || []).length, b = bredCount();
+  if (STATE.xpDiscN === undefined) STATE.xpDiscN = d;
+  if (STATE.xpBredN === undefined) STATE.xpBredN = b;
+  if (d > STATE.xpDiscN) { gainXP((d - STATE.xpDiscN) * XP_DISCOVER); STATE.xpDiscN = d; saveGame(); }
+  if (b > STATE.xpBredN) { gainXP((b - STATE.xpBredN) * XP_BRED); STATE.xpBredN = b; saveGame(); }
+}
+const _updatePG = update;
+update = function (dt) { _updatePG(dt); checkProgressXP(); };
+
+// Ältere Spielstände: einmalig XP für bisherigen Fortschritt (Sorten, Quests, eigene Sorten)
+const _loadGamePG = loadGame;
+loadGame = function () {
+  XP_SILENT = true;
+  let r;
+  try { r = _loadGamePG(); } finally { XP_SILENT = false; }
+  if (STATE && STATE.xp === undefined) {
+    let xp = (STATE.discovered || []).length * XP_DISCOVER + bredCount() * XP_BRED;
+    for (const q of Object.keys(QUESTS)) if (questStep(q) >= QUESTS[q].steps.length - 1) xp += MAIN_QUESTS.includes(q) ? XP_MAIN_QUEST : XP_SIDE_QUEST;
+    STATE.xp = xp; STATE.xpDiscN = (STATE.discovered || []).length; STATE.xpBredN = bredCount();
+    if (!STATE.perks) STATE.perks = {};
+    if (STATE.rep === undefined) STATE.rep = 0;
+  }
+  if (!STATE.perks) STATE.perks = {};
+  return r;
+};
+
+/* ---------------------------- ANZEIGE: LEVEL OBEN RECHTS ---------------------------- */
+const _renderUIPG = renderUI;
+renderUI = function () {
+  _renderUIPG();
+  if (!STATE || currentMode() !== "play") return;
+  const L = playerLevel(), xp = STATE.xp || 0, a = xpForLevel(L), b = xpForLevel(L + 1);
+  const t = gameClock(), wc = textWidth(t) + 12;
+  const label = "Lv " + L, w = textWidth(label) + 12, x = VIEW_W - wc - 4 - w - 3, y = 4;
+  drawBox(x, y, w, 17);
+  drawText(ctx, label, x + 6, y + 4, C.uiText);
+  px(ctx, "#c8c8d0", x + 4, y + 13, w - 8, 2);
+  px(ctx, "#40b060", x + 4, y + 13, Math.round((w - 8) * Math.min(1, (xp - a) / (b - a))), 2);
+  if (skillPoints() > 0) { pixelCircle(ctx, x + w - 2, y + 2, 3, C.red, C.ink); }
+  const p = GAME.xpPop;
+  if (p && GAME.time - p.t < 1.4) {
+    const s = `+${p.n} XP`, k = (GAME.time - p.t) / 1.4;
+    ctx.globalAlpha = 1 - k * k;
+    drawText(ctx, s, x + w - textWidth(s), y + 20 + Math.round(k * 4), "#40d070", "#000");
+    ctx.globalAlpha = 1;
+  }
+};
+
+/* ---------------------------- SMARTPHONE-APP „SKILLS“ ---------------------------- */
+PHONE_APPS.push({ id: "skills", label: "Skills", color: "#40b060", badge: () => STATE ? Math.max(0, skillPoints()) : 0 });
+const _updatePhonePG = updatePhone;
+updatePhone = function () {
+  const sc = GAME.screen;
+  if (!sc || sc.view !== "skills") return _updatePhonePG();
+  if (sc.psel === undefined) sc.psel = 0;
+  if (Input.consume("up")) { sc.psel = (sc.psel + PERKS.length - 1) % PERKS.length; sc.pconfirm = null; Sound.select(); }
+  if (Input.consume("down")) { sc.psel = (sc.psel + 1) % PERKS.length; sc.pconfirm = null; Sound.select(); }
+  if (Input.consume("a")) {
+    const p = PERKS[sc.psel];
+    if (perkRank(p.id) >= p.max || !perkOpen(p) || skillPoints() < 1) { Sound.bump(); sc.pconfirm = null; }
+    else if (sc.pconfirm !== p.id) { sc.pconfirm = p.id; Sound.select(); }        // erst nachfragen …
+    else {                                                                        // … zweites A = lernen
+      STATE.perks[p.id] = perkRank(p.id) + 1; sc.pconfirm = null; saveGame(); Sound.confirm();
+      showBanner(`${p.name} Stufe ${perkRank(p.id)} gelernt!`);
+    }
+  }
+  if (Input.consume("b")) { sc.view = "home"; sc.pconfirm = null; Sound.cancel(); }
+  if (Input.consume("start")) GAME.screen = null;
+};
+const _renderPhonePG = renderPhone;
+renderPhone = function () {
+  const sc = GAME.screen;
+  if (sc.view !== "skills") return _renderPhonePG();
+  const saved = sc.view; sc.view = "_blank"; _renderPhoneBase(); sc.view = saved;
+  const { sx, sy, sw, sh } = PHONE_SCREEN;
+  if (sc.psel === undefined) sc.psel = 0;
+  const L = playerLevel(), xp = STATE.xp || 0, a = xpForLevel(L), b = xpForLevel(L + 1);
+  drawText(ctx, `Level ${L}`, sx + 6, sy + 16, C.uiText);
+  const xs = `${xp - a}/${b - a} XP`; drawText(ctx, xs, sx + sw - 6 - textWidth(xs), sy + 16, "#707080", null);
+  px(ctx, "#c8c8d0", sx + 6, sy + 25, sw - 12, 3); px(ctx, "#40b060", sx + 6, sy + 25, Math.round((sw - 12) * (xp - a) / (b - a)), 3);
+  const pts = skillPoints();
+  drawText(ctx, `Punkte: ${pts}`, sx + 6, sy + 31, pts > 0 ? C.red : "#707080", null);
+  const rs = `Ruf ${repStage()}/10`; drawText(ctx, rs, sx + sw - 6 - textWidth(rs), sy + 31, "#9a58b8", null);
+  // Liste: je Fertigkeit 2 Zeilen, Ast-Überschriften dazwischen
+  const rows = [];
+  PERKS.forEach((p, i) => {
+    if (!i || PERKS[i - 1].tree !== p.tree) rows.push({ head: p.tree });
+    rows.push({ p, i });
+  });
+  const top = sy + 44, rowH = 21, headH = 11, maxH = sh - 44 - 18;
+  // Scrollen: ausgewählte Fertigkeit sichtbar halten
+  const yOf = k => rows.slice(0, k).reduce((n, r) => n + (r.head ? headH : rowH), 0);
+  const selRow = rows.findIndex(r => r.p && r.i === sc.psel);
+  let off = sc.poff || 0;
+  if (yOf(selRow) - off < 0) off = yOf(selRow) - (selRow > 0 && rows[selRow - 1].head ? headH : 0);
+  if (yOf(selRow) + rowH - off > maxH) off = yOf(selRow) + rowH - maxH;
+  sc.poff = off = Math.max(0, off);
+  ctx.save(); ctx.beginPath(); ctx.rect(sx, top, sw, maxH); ctx.clip();
+  rows.forEach((r, k) => {
+    const y = top + yOf(k) - off;
+    if (r.head) { drawText(ctx, r.head, sx + 6, y + 2, "#2f7a45", null); return; }
+    const p = r.p, rank = perkRank(p.id), open = perkOpen(p), sel = r.i === sc.psel;
+    if (sel) { px(ctx, "#2f7a45", sx + 3, y, sw - 6, rowH - 2); px(ctx, "#d8f0d8", sx + 4, y + 1, sw - 8, rowH - 4); }
+    drawText(ctx, p.name, sx + 7, y + 3, open ? C.uiText : "#a0a0a8", null);
+    for (let j = 0; j < p.max; j++) { const bx = sx + sw - 9 - (p.max - j) * 7; px(ctx, C.ink, bx, y + 3, 6, 6); px(ctx, j < rank ? "#40b060" : "#e8f0f0", bx + 1, y + 4, 4, 4); }
+    const info = !open ? `braucht ${perkPrev(p).name}` : rank >= p.max ? p.txt(rank * p.per) + " (max)" : "→ " + p.txt((rank + 1) * p.per);
+    drawText(ctx, info, sx + 7, y + 11, "#707080", null);
+  });
+  ctx.restore();
+  const p = PERKS[sc.psel];
+  const hint = sc.pconfirm === p.id ? `Nochmal A: ${p.name} lernen` : pts > 0 && perkOpen(p) && perkRank(p.id) < p.max ? "A: Lernen · B: Zurück" : "B: Zurück";
+  drawText(ctx, hint, sx + 6, sy + sh - 14, sc.pconfirm === p.id ? C.red : "#707080", null);
 };
 
 /* ---------------------------------------------------------------------
