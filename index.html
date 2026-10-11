@@ -2819,6 +2819,8 @@ function openSlotActions(slot) {
   }
   const fertPhase = stage >= 2 && stage <= 3 ? "fertVeg" : stage === 4 ? "fertBloom" : null;
   items.push({ label: "Düngen", id: "fert", disabled: !fertPhase || !!pl[fertPhase] || !invOf("fert").length });
+  const fertNeed = fertTodo(tent);
+  if (fertNeed.length > 1) items.push({ label: `Alle düngen (${fertNeed.length})`, id: "fertAll", disabled: !invOf("fert").length });
   if (!pl.owner && !pl.sts && stage < BLOOM_STAGE) items.push({ label: "Besprühen (Silberthiosulfat)", id: "sts", disabled: stsAvailable() < 1 });
   if (!pl.owner && isPollenPlant(pl) && plantProgress(pl) >= POLLEN_FROM - 1e-6) items.push({ label: pl.pollenTaken ? "Pollen gesammelt" : "Pollen sammeln", id: "pollenTake", disabled: !!pl.pollenTaken });
   if (!pl.owner && !isPollenPlant(pl) && !pl.pollen && stage === BLOOM_STAGE) items.push({ label: "Bestäuben (Pollen)", id: "pollenUse", disabled: !invOf("pollen").length });
@@ -2845,6 +2847,12 @@ function openSlotActions(slot) {
             openDialog(`${ITEMS[f.id].name} für die ${fertPhase === "fertVeg" ? "Wachstumsphase" : "Blütephase"} gegeben.`);
           },
         });
+      } else if (it.id === "fertAll") {
+        openMenu({
+          title: "DÜNGER FÜR ALLE WÄHLEN",
+          items: invOf("fert").map(id => ({ label: ITEMS[id].name, right: "×" + invCount(id), id })),
+          onChoose(f) { fertAll(tent, f.id); },
+        });
       } else if (it.id === "sts") {
         openDialog(`${STRAINS[pl.strain].name} mit Silberthiosulfat besprühen?\nSie bildet dann Pollen statt Blüten. Die Samen daraus sind feminisiert.`, ["Besprühen", "Abbrechen"], c => {
           if (c !== 0) return;
@@ -2865,6 +2873,23 @@ function openSlotActions(slot) {
       }
     },
   });
+}
+/* ---------- ALLE DÜNGEN ---------- */
+// Dünger-Phase einer Pflanze (Wachstum: Stufe 2–3, Blüte: Stufe 4)
+function fertPhaseOf(p) { const st = plantStage(p); return st >= 2 && st <= 3 ? "fertVeg" : st === 4 ? "fertBloom" : null; }
+// Pflanzen im Zelt, die in ihrer aktuellen Phase noch keinen Dünger haben
+function fertTodo(tent) { return tent.plants.filter(p => { if (!p) return false; const ph = fertPhaseOf(p); return ph && !p[ph]; }); }
+function fertAll(tent, fertId) {
+  const list = fertTodo(tent);
+  let n = 0;
+  for (const p of list) {
+    if (invCount(fertId) < 1) break;
+    p[fertPhaseOf(p)] = fertId; invAdd(fertId, -1); n++;
+  }
+  saveGame(); Sound.select();
+  let msg = `Du hast ${n} ${n === 1 ? "Pflanze" : "Pflanzen"} mit ${ITEMS[fertId].name} gedüngt.`;
+  if (n < list.length) msg += `\nDer Dünger reichte nur für ${n} von ${list.length} Pflanzen.`;
+  openDialog(msg);
 }
 /* ---------- GANZES ZELT: füllen und ernten ---------- */
 // Füllt alle freien Plätze (beginnend beim gewählten) mit gleicher Sorte + gleichem Substrat
