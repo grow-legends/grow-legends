@@ -4081,7 +4081,7 @@ MAPS.outside = {
     { type: "lamp", x: 4, y: 39 }, { type: "lamp", x: 24, y: 39 },
 
     // ---------- PARK mit Brunnen ----------
-    ...hedges(25, 20, 38, 20), ...hedges(25, 21, 25, 30), ...hedges(38, 21, 38, 30),
+    ...hedges(25, 20, 30, 20), ...hedges(34, 20, 38, 20), ...hedges(25, 21, 25, 30), ...hedges(38, 21, 38, 30),
     ...hedges(25, 31, 30, 31), ...hedges(34, 31, 38, 31),
     { type: "fountain", x: 31, y: 24 },
     { type: "tree", x: 28, y: 21 }, { type: "tree", x: 34, y: 21 },
@@ -5317,7 +5317,9 @@ function isHomeMap(id) { return id === "apartment"; }
 const budKey = b => b.strain + "|" + b.quality + "|" + (b.owner || "") + "|" + (b.line || "") + "|" + (b.tested ? 1 : 0);   // Linie + getestet (36.) trennen Stapel
 const sumG = list => list.reduce((s, b) => s + b.grams, 0);
 function stash() { if (!STATE.stash) STATE.stash = []; return STATE.stash; }
-const bagFree = () => Math.max(0, BAG_MAX_G - sumG(STATE.buds));
+// Kapazität der Tasche: ohne Tasche BAG_MAX_G, mit Tasche aus dem Kleidungsladen mehr (30. Kleidung)
+function bagMax() { const b = STATE && STATE.outfit && STATE.outfit.bag; return b && typeof CLOTHES !== "undefined" && CLOTHES[b] ? CLOTHES[b].cap : BAG_MAX_G; }
+const bagFree = () => Math.max(0, bagMax() - sumG(STATE.buds));
 function stashMax() { return STASH_MAX_G; }          // wird durch Schränke aus dem Möbelhaus erweitert
 const stashFree = () => Math.max(0, stashMax() - sumG(stash()));
 // Menge einer Blüte in eine Liste legen (stapelt automatisch)
@@ -5372,7 +5374,7 @@ harvestPlant = function (tent, slot) {
 };
 const _harvestTextT = harvestText;
 harvestText = function (res) {
-  if (res.full) return `Deine Tasche ist voll (${fmtKg(sumG(STATE.buds))} von ${fmtKg(BAG_MAX_G)}).` +
+  if (res.full) return `Deine Tasche ist voll (${fmtKg(sumG(STATE.buds))} von ${fmtKg(bagMax())}).` +
     (isHomeMap(GAME.mapId) ? " Auch im Schrank ist kein Platz mehr." : " Bring Blüten in deinen Schrank zu Hause.");
   let t = _harvestTextT(res);
   if (res.bud && res.bud.toStash) { t += `\nInventar voll – Ernte liegt im Schrank (${fmtG(res.bud.toStash)}).`; showBanner("Inventar voll – Ernte im Schrank"); }
@@ -5387,7 +5389,7 @@ openBagMenu = function () {
   for (const b of STATE.buds) items.push({ label: budLabel(b), right: fmtG(b.grams), color: RARITIES[b.rarity].color, bud: b });
   for (const cat of Object.keys(CAT_LABELS)) for (const id of invOf(cat)) items.push({ label: ITEMS[id].name, right: "×" + invCount(id), id });
   openMenu({
-    title: "TASCHE", items, stay: true, footer: () => `Blüten ${fmtKg(sumG(STATE.buds))} / ${fmtKg(BAG_MAX_G)}`,
+    title: "TASCHE", items, stay: true, footer: () => `Blüten ${fmtKg(sumG(STATE.buds))} / ${fmtKg(bagMax())}`,
     empty: "Die Tasche ist leer.",
     onChoose(item) { openDialog(item.bud ? budInfo(item.bud) : itemInfo(item.id)); },
   });
@@ -7147,6 +7149,16 @@ function talkStreet(p) {
   const fits = b => !b.owner && (!o.strain || b.strain === o.strain) && (!o.minRarity || b.rarity >= o.minRarity);
   const have = sumG(STATE.buds.filter(fits));
   if (have + 1e-9 < o.grams) {
+    // Wunschsorte nicht da: eine andere Sorte als Alternative anbieten (Wert −15 %)
+    const altFits = b => !b.owner, altHave = sumG(STATE.buds.filter(altFits));
+    if (o.strain && altHave + 1e-9 >= o.grams) {
+      openDialog(`${p.name}: Hast du's? Ich brauche ${need}.` + (have > 0 ? `\nDu hast nur ${fmtG(have)} davon dabei.` : `\nDu hast keine ${STRAINS[o.strain].name} dabei.`),
+        [`Alternative anbieten (−${Math.round(STREET_ALT_CUT * 100)} %)`, "Später"], c => {
+          if (c !== 0) return;
+          openDialog(`${p.name}: Hm … na gut, zeig her. Aber dann gibt's ${Math.round(STREET_ALT_CUT * 100)} % weniger.`, null, () => chooseStreetBuds(p, o, altFits, o.grams, [], true));
+        });
+      return;
+    }
     openDialog(`${p.name}: Hast du's? Ich brauche ${need}.` + (have > 0 ? `\nDu hast nur ${fmtG(have)} Passendes dabei.` : "\nDu hast nichts Passendes in deiner Tasche."));
     return;
   }
@@ -7155,7 +7167,8 @@ function talkStreet(p) {
   });
 }
 // Blüten auswählen, bis die Menge erreicht ist (Abbrechen = alles zurück in die Tasche)
-function chooseStreetBuds(p, o, fits, left, parts) {
+const STREET_ALT_CUT = 0.15;                       // Alternative statt Wunschsorte: 15 % weniger
+function chooseStreetBuds(p, o, fits, left, parts, alt) {
   parts = parts || [];
   const list = STATE.buds.filter(fits);
   openMenu({
@@ -7167,21 +7180,21 @@ function chooseStreetBuds(p, o, fits, left, parts) {
       const part = takeFromList(STATE.buds, it.bud, g);
       parts.push(part);
       const nl = Math.round((left - part.grams) * 10) / 10;
-      if (nl > 0.05) chooseStreetBuds(p, o, fits, nl, parts);
-      else finishStreet(p, o, parts);
+      if (nl > 0.05) chooseStreetBuds(p, o, fits, nl, parts, alt);
+      else finishStreet(p, o, parts, alt);
     },
   });
 }
-function finishStreet(p, o, parts) {
+function finishStreet(p, o, parts, alt) {
   const st = street()[p.id];
   const grams = Math.round(parts.reduce((n, b) => n + b.grams, 0) * 10) / 10, value = parts.reduce((n, b) => n + b.value, 0);
-  const pay = Math.round(value * o.factor * negoFactor() * 100) / 100;
+  const pay = Math.round(value * o.factor * negoFactor() * (alt ? 1 - STREET_ALT_CUT : 1) * 100) / 100;
   STATE.money += pay;
   streetLog(`✓ ${p.name}: ${fmtG(grams)} · ${euro(pay)}`);
   st.order = null; st.done++; st.nextAt = nowMin() + rint(...STREET_GAP);
   saveGame(); Sound.floor();
   refreshStreetMaps();
-  openDialog(`Du hast ${fmtG(grams)} an ${p.name} verkauft: ${euro(pay)} (${Math.round(o.factor * 100)} % von ${euro(Math.round(value * 100) / 100)}).\n${p.name}: Top, bro! Ich meld mich wieder.`);
+  openDialog(`Du hast ${fmtG(grams)} an ${p.name} verkauft: ${euro(pay)} (${Math.round(o.factor * 100)} % von ${euro(Math.round(value * 100) / 100)}${alt ? `, Alternative −${Math.round(STREET_ALT_CUT * 100)} %` : ""}).\n${p.name}: Top, bro! Ich meld mich wieder.`);
 }
 
 /* ---------------------------- SMARTPHONE: AUFTRÄGE ---------------------------- */
@@ -7676,6 +7689,10 @@ const CLOTHES = {
   acc_ring:    { slot: "acc", name: "Goldring",         price: 2500, nego: 4 },
   acc_watch:   { slot: "acc", name: "Armbanduhr",       price: 4000, nego: 5 },
   acc_gold:    { slot: "acc", name: "Goldkette",        price: 5000, nego: 5 },
+  // Taschen (eigener Platz, an der Figur sichtbar): mehr Platz für Blüten (ohne Tasche 5 kg)
+  bag_sling:    { slot: "bag", name: "Umhängetasche",   price: 1500, cap: 7000,  look: "sling" },
+  bag_backpack: { slot: "bag", name: "Rucksack",        price: 4000, cap: 10000, look: "backpack" },
+  bag_duffel:   { slot: "bag", name: "Trainingstasche", price: 9000, cap: 15000, look: "duffel" },
 };
 CAT_LABELS.clothes = "Kleidung";
 for (const [id, c] of Object.entries(CLOTHES)) ITEMS[id] = { cat: "clothes", name: c.name, price: c.price, desc: clothesBonusText(c) || "Ohne Bonus." };
@@ -7683,6 +7700,7 @@ function clothesBonusText(c) {
   const b = [];
   if (c.nego) b.push(`Verhandlungsgeschick +${c.nego} %`);
   if (c.thumb) b.push(`Grüner Daumen +${c.thumb} %`);
+  if (c.cap) b.push(`Platz für ${c.cap / 1000} kg Blüten`);
   return b.join(" · ");
 }
 function outfit() {
@@ -7690,7 +7708,9 @@ function outfit() {
   return STATE.outfit;
 }
 const ownsClothes = id => CLOTHES[id].start || invCount(id) > 0;
-function wornIds() { const o = outfit(); return [o.top, o.pants, ...o.acc].filter(Boolean); }
+function wornIds() { const o = outfit(); return [o.top, o.pants, ...o.acc, o.bag].filter(Boolean); }
+// Tasche wechseln nur, wenn die Blüten in die neue passen
+function canWearBag(id) { const cap = id ? CLOTHES[id].cap : BAG_MAX_G; return sumG(STATE.buds) <= cap + 1e-9; }
 function outfitBonus(key) { return wornIds().reduce((n, id) => n + (CLOTHES[id] && CLOTHES[id][key] || 0), 0); }
 function negoFactor() { return STATE ? 1 + outfitBonus("nego") / 100 : 1; }
 // Grüner Daumen: Pflanzen wachsen schneller
@@ -7716,6 +7736,7 @@ invAdd = function (id, n = 1) {
     if (o.top === id) o.top = "top_red";
     if (o.pants === id) o.pants = "pants_dark";
     o.acc = o.acc.map(a => a === id ? null : a);
+    if (o.bag === id) o.bag = null;
     applyOutfitSprite();
   }
 };
@@ -7728,6 +7749,7 @@ function openOutfitMenu() {
     { label: "Oberteil", right: label(o.top), slot: "top" },
     { label: "Hose", right: label(o.pants), slot: "pants" },
     ...[0, 1, 2].map(i => ({ label: `Accessoire ${i + 1}`, right: label(o.acc[i]), slot: "acc", idx: i })),
+    { label: "Tasche", right: o.bag ? label(o.bag) : "keine (5 kg)", slot: "bag" },
   ];
   openMenu({
     title: "KLEIDUNG", stay: true, items: build(),
@@ -7737,10 +7759,11 @@ function openOutfitMenu() {
       const owned = Object.keys(CLOTHES).filter(id => CLOTHES[id].slot === it.slot && ownsClothes(id));
       const used = it.slot === "acc" ? o.acc.filter((a, i) => a && i !== it.idx) : [];
       const items = owned.filter(id => !used.includes(id)).map(id => ({ label: CLOTHES[id].name, right: clothesBonusText(CLOTHES[id]).replace("Verhandlungsgeschick", "Verh.").replace("Grüner Daumen", "Daumen"), id }));
-      if (it.slot === "acc") items.unshift({ label: "Nichts", id: null });
+      if (it.slot === "acc" || it.slot === "bag") items.unshift({ label: it.slot === "bag" ? "Keine Tasche (5 kg)" : "Nichts", id: null });
       openMenu({
         title: it.label.toUpperCase(), items, empty: "Du hast noch keine Accessoires. Die gibt es im Kleidungsladen.",
         onChoose(c) {
+          if (it.slot === "bag" && !canWearBag(c.id)) { Sound.bump(); openDialog(`Da passen deine Blüten nicht rein (${fmtKg(sumG(STATE.buds))}). Leg erst etwas in den Schrank.`); return; }
           if (it.slot === "acc") o.acc[it.idx] = c.id; else o[it.slot] = c.id;
           applyOutfitSprite(); saveGame(); Sound.confirm();
           m.items = build();
@@ -7813,10 +7836,10 @@ CUSTOM_INTERACTIONS.fashionShop = () => {
   openDialog("Verkäuferin: Hallo! Schöne Sachen gibt's hier – und manche davon bringen dir sogar was.\nVerkäuferin: Gute Kleidung macht dich beim Verhandeln stärker, die Gärtner-Sachen geben dir einen grünen Daumen.", null, openFashionShop);
 };
 function openFashionShop() {
-  const cats = [["Oberteile", "top"], ["Hosen", "pants"], ["Accessoires", "acc"]];
+  const cats = [["Oberteile", "top"], ["Hosen", "pants"], ["Accessoires", "acc"], ["Taschen", "bag"]];
   openMenu({
     style: "shop", title: "Kleidung", stay: true,
-    items: cats.map(([label, slot]) => ({ label, slot, desc: slot === "acc" ? "Modeschmuck: teurer, aber mehr Verhandlungsgeschick (+3 bis +5 %)." : "Verhandlungsgeschick +1 bis +3 % oder Grüner Daumen +5 %." })),
+    items: cats.map(([label, slot]) => ({ label, slot, desc: slot === "acc" ? "Modeschmuck: teurer, aber mehr Verhandlungsgeschick (+3 bis +5 %)." : slot === "bag" ? "Mehr Platz für Blüten: 7, 10 oder 15 kg (ohne Tasche 5 kg)." : "Verhandlungsgeschick +1 bis +3 % oder Grüner Daumen +5 %." })),
     onChoose(cat) {
       const build = () => Object.keys(CLOTHES).filter(id => CLOTHES[id].slot === cat.slot && !CLOTHES[id].start)
         .map(id => ({ label: CLOTHES[id].name, right: ownsClothes(id) ? "✓" : euro(CLOTHES[id].price), desc: clothesBonusText(CLOTHES[id]) || "Ohne Bonus – einfach schick.", id, disabled: ownsClothes(id) }));
@@ -7832,6 +7855,7 @@ function openFashionShop() {
             const o = outfit(), free = o.acc.indexOf(null);
             openDialog(`Du hast ${c.name} gekauft. Direkt anziehen?`, ["Anziehen", "Später"], a => {
               if (a !== 0) return;
+              if (c.slot === "bag" && !canWearBag(it.id)) { openDialog("Da passen deine Blüten gerade nicht rein."); return; }
               if (c.slot === "acc") o.acc[free >= 0 ? free : 0] = it.id; else o[c.slot] = it.id;
               applyOutfitSprite(); saveGame();
               openDialog(`Du trägst jetzt ${c.name}.` + (c.slot === "acc" && free < 0 ? "\n(Es hat Accessoire 1 ersetzt.)" : ""));
@@ -8887,27 +8911,46 @@ function dexBar(x, y, w, f, col) {
 }
 const clip = (t, w) => { while (t.length > 1 && textWidth(t) > w) t = t.slice(0, -2) + "…"; return t; };
 
+// Sortierung des Verzeichnisses (START wechselt): Nummer · A–Z · Seltenheit. Unbekannte Sorten stehen bei A–Z/Seltenheit hinten.
+const DEX_SORTS = [["Nr.", null], ["A–Z", (a, b) => STRAINS[a].name.localeCompare(STRAINS[b].name, "de")], ["Seltenheit", (a, b) => STRAINS[b].rarity - STRAINS[a].rarity || STRAINS[a].nr - STRAINS[b].nr]];
+let DEX_CACHE = { key: "", list: [] };
+function DEXV() {
+  const mode = (STATE && STATE.dexSort) || 0, key = mode + "|" + STRAIN_LIST.length + "|" + ((STATE && STATE.discovered) || []).length;
+  if (DEX_CACHE.key === key) return DEX_CACHE.list;
+  const cmp = DEX_SORTS[mode][1];
+  const list = !cmp ? STRAIN_LIST.slice() : [...STRAIN_LIST.filter(isDiscovered).sort(cmp), ...STRAIN_LIST.filter(k => !isDiscovered(k))];
+  DEX_CACHE = { key, list };
+  return list;
+}
+function prevDiscovered(d) {
+  const sc = GAME.screen, L = DEXV(), n = L.length;
+  for (let i = 1; i <= n; i++) { const id = L[(sc.pick + d * i + n * 2) % n]; if (isDiscovered(id)) return id; }
+  return L[sc.pick];
+}
 // Ansichten "strains" (Liste) und "strain" (Details) des Smartphones übernehmen
 const _updatePhoneDex = updatePhone;
 updatePhone = function () {
   const sc = GAME.screen;
   if (sc.view === "strains") {
-    const n = STRAIN_LIST.length; sc.pick = sc.pick || 0;
+    const n = DEXV().length; sc.pick = sc.pick || 0;
     const step = d => { sc.pick = clamp(sc.pick + d, 0, n - 1); Sound.select(); };
     if (Input.consume("up")) step(-1);
     if (Input.consume("down")) step(1);
     if (Input.consume("left")) step(-10);
     if (Input.consume("right")) step(10);
-    if (Input.consume("a")) { if (isDiscovered(STRAIN_LIST[sc.pick])) { sc.view = "strain"; sc.tab = sc.tab || 0; Sound.confirm(); } else Sound.bump(); }
+    if (Input.consume("a")) { if (isDiscovered(DEXV()[sc.pick])) { sc.view = "strain"; sc.tab = sc.tab || 0; Sound.confirm(); } else Sound.bump(); }
     else if (Input.consume("b")) { sc.view = "home"; Sound.cancel(); }
-    if (Input.consume("start")) GAME.screen = null;
+    if (Input.consume("start")) {                                  // Sortierung wechseln, Auswahl bleibt auf derselben Sorte
+      const cur = DEXV()[sc.pick];
+      STATE.dexSort = ((STATE.dexSort || 0) + 1) % DEX_SORTS.length; sc.pick = Math.max(0, DEXV().indexOf(cur)); Sound.select();
+    }
     return;
   }
   if (sc.view === "strain") {
     if (Input.consume("left")) { sc.tab = (sc.tab + DEX_TABS.length - 1) % DEX_TABS.length; Sound.select(); }
     if (Input.consume("right") || Input.consume("a")) { sc.tab = (sc.tab + 1) % DEX_TABS.length; Sound.select(); }
-    if (Input.consume("up")) { sc.pick = STRAIN_LIST.indexOf(prevDiscovered(-1)); Sound.select(); }
-    if (Input.consume("down")) { sc.pick = STRAIN_LIST.indexOf(prevDiscovered(1)); Sound.select(); }
+    if (Input.consume("up")) { sc.pick = DEXV().indexOf(prevDiscovered(-1)); Sound.select(); }
+    if (Input.consume("down")) { sc.pick = DEXV().indexOf(prevDiscovered(1)); Sound.select(); }
     if (Input.consume("b")) { sc.view = "strains"; Sound.cancel(); }
     if (Input.consume("start")) GAME.screen = null;
     return;
@@ -8923,45 +8966,48 @@ renderPhone = function () {
 };
 function renderDexList(sc) {
   dexFrame("SORTENVERZEICHNIS");
-  const id = STRAIN_LIST[sc.pick], s = STRAINS[id], known = isDiscovered(id);
+  sc.pick = clamp(sc.pick || 0, 0, DEXV().length - 1);
+  const id = DEXV()[sc.pick], s = STRAINS[id], known = isDiscovered(id);
   const lw = Math.round(VIEW_W * 0.4), top = 18, bottom = VIEW_H - 12;
   // linke Seite: Namensschild, Bild, Zähler
   dexBox(4, top, lw - 6, 14, DEX.red, DEX.ink); px(ctx, "#f8f8f8", 9, top + 2, lw - 16, 10);
   const nm = clip(known ? s.name : "???", lw - 20); drawText(ctx, nm, Math.round(4 + (lw - 6 - textWidth(nm)) / 2), top + 3, DEX.ink, null);
-  const cbH = 24, cy = Math.round((top + 16 + bottom - cbH) / 2), cx = Math.round(4 + (lw - 6) / 2);
-  const r = Math.min(Math.round((bottom - cbH - top - 20) / 2), Math.round(lw / 2) - 8);
+  if (known) { const rn = RARITIES[s.rarity].name + " · T" + s.tier; drawText(ctx, rn, Math.round(4 + (lw - 6 - textWidth(rn)) / 2), top + 16, RARITIES[s.rarity].color, null); }
+  const cbH = 24, cy = Math.round((top + 26 + bottom - cbH) / 2), cx = Math.round(4 + (lw - 6) / 2);
+  const r = Math.min(Math.round((bottom - cbH - top - 30) / 2), Math.round(lw / 2) - 8);
   pixelCircle(ctx, cx, cy, r, "#d4d4da"); pixelCircle(ctx, cx, cy, Math.round(r * 0.72), "#e8e8ec");
   if (known) drawDexBud(ctx, cx, cy, r / 16, id, false);
   else drawText(ctx, "?", cx - 2, cy - 4, "#a0a0a8", null);
   dexBox(4, bottom - cbH, lw - 6, cbH, "#f8f8f8", DEX.ink); px(ctx, DEX.red, 5, bottom - cbH + 1, 3, cbH - 2);
-  const found = STRAIN_LIST.filter(isDiscovered).length, grown = STRAIN_LIST.filter(isGrown).length;
+  const found = DEXV().filter(isDiscovered).length, grown = DEXV().filter(isGrown).length;
   drawText(ctx, "Entdeckt:", 11, bottom - cbH + 3, DEX.ink, null); drawText(ctx, String(found), lw - 8 - textWidth(String(found)), bottom - cbH + 3, DEX.ink, null);
   drawText(ctx, "Angebaut:", 11, bottom - cbH + 13, DEX.ink, null); drawText(ctx, String(grown), lw - 8 - textWidth(String(grown)), bottom - cbH + 13, DEX.ink, null);
   // rechte Seite: Liste
   const x0 = lw + 2, w0 = VIEW_W - x0 - 14, rh = 12, rows = Math.max(3, Math.floor((bottom - top - 4) / rh));
   dexBox(x0, top, w0, rows * rh + 4, "#f8f8f8", DEX.ink); px(ctx, DEX.red, x0 + 1, top + 1, 12, rows * rh + 2);
-  sc.top = clamp(sc.top || 0, 0, STRAIN_LIST.length - rows);
+  sc.top = clamp(sc.top || 0, 0, DEXV().length - rows);
   if (sc.pick < sc.top) sc.top = sc.pick;
   if (sc.pick >= sc.top + rows) sc.top = sc.pick - rows + 1;
   for (let i = 0; i < rows; i++) {
-    const k = STRAIN_LIST[sc.top + i]; if (!k) break;
+    const k = DEXV()[sc.top + i]; if (!k) break;
     const ss = STRAINS[k], ly = top + 2 + i * rh, kn = isDiscovered(k);
     if (sc.top + i === sc.pick) { px(ctx, DEX.red, x0 + 14, ly, w0 - 16, rh); px(ctx, "#fff0f0", x0 + 15, ly + 1, w0 - 18, rh - 2); }
     // Symbol: angebaut = Blüte, entdeckt = grauer Punkt
     if (isGrown(k)) { pixelCircle(ctx, x0 + 7, ly + 6, 3, ss.color, C.ink); px(ctx, C.white, x0 + 6, ly + 4, 1, 1); }
     else if (kn) pixelCircle(ctx, x0 + 7, ly + 6, 2, "#f0f0f0", "#808088");
     drawText(ctx, String(ss.nr).padStart(3, "0"), x0 + 17, ly + 2, DEX.ink, null);
-    drawText(ctx, clip(kn ? ss.name : "---", w0 - 42), x0 + 38, ly + 2, kn ? DEX.ink : "#909098", null);
+    if (kn) px(ctx, RARITIES[ss.rarity].color, x0 + w0 - 6, ly + 2, 3, 8);       // Seltenheits-Streifen
+    drawText(ctx, clip(kn ? ss.name : "---", w0 - 46), x0 + 38, ly + 2, kn ? DEX.ink : "#909098", null);
   }
   // Scrollbalken
   const bx = VIEW_W - 11, bh = rows * rh + 4;
   dexBox(bx, top, 8, bh, "#f0f0f0", DEX.ink);
-  const th = Math.max(8, Math.round(bh * rows / STRAIN_LIST.length)), ty = top + Math.round((bh - th) * sc.top / Math.max(1, STRAIN_LIST.length - rows));
+  const th = Math.max(8, Math.round(bh * rows / DEXV().length)), ty = top + Math.round((bh - th) * sc.top / Math.max(1, DEXV().length - rows));
   dexBox(bx + 1, ty, 6, th, DEX.blue, DEX.blueDk);
-  drawText(ctx, "A: Details  ◀▶: 10er  B: zurück", 4, VIEW_H - 10, "#606068", null);
+  drawText(ctx, `A: Details  START: Sortierung (${DEX_SORTS[(STATE && STATE.dexSort) || 0][0]})`, 4, VIEW_H - 10, "#606068", null);
 }
 function renderDexDetail(sc) {
-  const id = STRAIN_LIST[sc.pick], s = STRAINS[id], lab = strainTested(id);
+  const id = DEXV()[sc.pick], s = STRAINS[id], lab = strainTested(id);
   px(ctx, DEX.grid, 0, 0, VIEW_W, VIEW_H);
   // Reiter
   px(ctx, DEX.blueDk, 0, 0, VIEW_W, 16); px(ctx, DEX.blue, 0, 0, VIEW_W, 14);
@@ -9422,6 +9468,8 @@ setInterval(async () => {
      Umtopfen: leerer Platz im Zelt → „Steckling einpflanzen“ (mit Substrat).
    ===================================================================== */
 const LINE_THC = 2, LINE_TERP = 0.2, TESTED_BONUS = 1.05, LAB_TEST_PRICE = 250;
+const CLONE_FRESH_MIN = 180;     // neuer Steckling: erst nach 3 Minuten (3 Spielstunden) selbst schneidbar
+const freshCutAt = () => gameMinutesTotal() - CLONE_COOLDOWN_MIN + CLONE_FRESH_MIN;
 const CLONE_CAP = 50, CLONE_BATCH = 5, CLONE_COOLDOWN_MIN = 5 * 60, GEL_USES = 25;
 const JUNG = STAGES.findIndex(s => s.name === "Jungpflanze");     // 2
 
@@ -9599,16 +9647,18 @@ const suppliesText = () => `Noch ${gelAvailable()} Portionen Bewurzelungsgel · 
 function useGel(n) { for (let i = 0; i < n; i++) { if (!STATE.gelOpen) { invAdd("root_gel", -1); STATE.gelOpen = GEL_USES; } STATE.gelOpen--; } }
 const cloneTentsHere = () => STATE.tents.filter(t => isCloneTent(t) && (t.home || "apartment") === GAME.mapId).map(t => { if (!t.clones) t.clones = []; return t; });
 const cloneFree = t => CLONE_CAP - (t.clones || []).length;
+// Wartezeit in echten Minuten (1 Spielstunde = 1 echte Minute)
+const cutWaitReal = pl => Math.ceil(cutReadyIn(pl) / 60);
 const cutReadyIn = pl => Math.max(0, Math.ceil((pl.cutAt || -1e9) + CLONE_COOLDOWN_MIN - gameMinutesTotal()));
 // Stecklinge schneiden: von einer Mutter (Pflanze im Zelt oder Steckling) in ein Stecklingszelt
 function cutClones(mother, target, after) {
-  if (cutReadyIn(mother) > 0) { openDialog(`Diese Pflanze braucht noch ca. ${cutReadyIn(mother)} min, bis sie neue Triebe für Stecklinge hat.`); return false; }
+  if (cutReadyIn(mother) > 0) { openDialog(`Diese Pflanze braucht noch ca. ${cutWaitReal(mother)} min, bis sie neue Triebe für Stecklinge hat.`); return false; }
   if (!target) { openDialog("Du brauchst hier ein Stecklingszelt mit freiem Platz (Growshop, 800 €)."); return false; }
   const n = Math.min(CLONE_BATCH, cutSupplies(), cloneFree(target));
   if (n < 1) { openDialog(scalpelAvailable() < 1 ? "Du brauchst ein Skalpell zum Schneiden (Growshop, 350 € für 100 Stecklinge)." : gelAvailable() < 1 ? "Du hast kein Bewurzelungsgel mehr (Growshop, 550 € für 25 Stecklinge)." : "Das Stecklingszelt ist voll."); return false; }
   useGel(n); useScalpel(n); mother.cutAt = gameMinutesTotal();
   if (!mother.line) mother.line = newLine(mother.strain);
-  for (let i = 0; i < n; i++) target.clones.push({ strain: mother.strain, line: mother.line, sex: mother.sex === "m" ? "m" : "f", reg: !!mother.reg });
+  for (let i = 0; i < n; i++) target.clones.push({ strain: mother.strain, line: mother.line, sex: mother.sex === "m" ? "m" : "f", reg: !!mother.reg, cutAt: freshCutAt() });
   saveGame(); Sound.select();
   if (after) after(n);
   return true;
@@ -9624,10 +9674,10 @@ openSlotActions = function (slot) {
     return;
   }
   _openSlotActionsLC(slot);
-  if (pl && !pl.owner && plantStage(pl) === JUNG && GAME.menus.length) {
+  if (pl && !pl.owner && plantStage(pl) >= JUNG && plantStage(pl) < BLOOM_STAGE && GAME.menus.length) {
     const m = GAME.menus[GAME.menus.length - 1], i = m.items.findIndex(x => x.id === "info");
     const wait = cutReadyIn(pl);
-    m.items.splice(i, 0, { label: "Stecklinge schneiden", id: "cut", right: wait ? `${wait} min` : supplyMissing(), disabled: wait > 0 || cutSupplies() < 1 });
+    m.items.splice(i, 0, { label: "Stecklinge schneiden", id: "cut", right: wait ? `${Math.ceil(wait / 60)} min` : supplyMissing(), disabled: wait > 0 || cutSupplies() < 1 });
     const orig = m.onChoose;
     m.onChoose = (it, idx) => {
       if (it.id !== "cut") return orig(it, idx);
@@ -9666,7 +9716,7 @@ function chooseClone(tent, slot) {
             const k = it.t.clones.findIndex(c => c.strain === it.c.strain && c.line === it.c.line && c.sex === it.c.sex);
             if (k < 0 || invCount(so.id) < 1) return false;
             const c = it.t.clones.splice(k, 1)[0]; invAdd(so.id, -1);
-            const pl = { strain: c.strain, soil: so.id, plantedAt: now(), last: now(), growMs: 0, water: 100, wetMs: 0, dryMs: 0, fertVeg: null, fertBloom: null, sex: c.sex, reg: c.reg, line: c.line, clone: true };
+            const pl = { cutAt: c.cutAt != null ? Math.max(c.cutAt, freshCutAt()) : freshCutAt(), strain: c.strain, soil: so.id, plantedAt: now(), last: now(), growMs: 0, water: 100, wetMs: 0, dryMs: 0, fertVeg: null, fertBloom: null, sex: c.sex, reg: c.reg, line: c.line, clone: true };
             pl.growMs = STAGES[JUNG].from * plantTotalMs(pl);
             tent.plants[s] = pl; return true;
           };
@@ -9693,14 +9743,14 @@ openTent = function (tent) {
   openMenu({
     title: `STECKLINGSZELT ${tent.clones.length}/${CLONE_CAP}`,
     items: groups.length ? groups.map(c => ({ label: cloneLabel(c), right: "×" + c.idx.length, c })) : [],
-    empty: "Noch keine Stecklinge. Schneide sie von einer Jungpflanze im Growzelt.",
+    empty: "Noch keine Stecklinge. Schneide sie im Growzelt von einer Pflanze vor der Blüte.",
     footer: () => `Gel: ${gelAvailable()} · Skalpell: ${scalpelAvailable()}`,
     onChoose(it) {
-      const mother = tent.clones[it.c.idx.find(i => cutReadyIn(tent.clones[i]) === 0) ?? it.c.idx[0]];
+      const mother = tent.clones[it.c.idx.reduce((best, i) => cutReadyIn(tent.clones[i]) < cutReadyIn(tent.clones[best]) ? i : best, it.c.idx[0])];   // die Pflanze, die am frühesten wieder geschnitten werden kann
       const wait = cutReadyIn(mother);
       openMenu({
         title: cloneLabel(it.c).toUpperCase(),
-        items: [{ label: "Stecklinge schneiden", id: "cut", right: wait ? `${wait} min` : supplyMissing(), disabled: wait > 0 || cutSupplies() < 1 || cloneFree(tent) < 1 },
+        items: [{ label: "Stecklinge schneiden", id: "cut", right: wait ? `${Math.ceil(wait / 60)} min` : supplyMissing(), disabled: wait > 0 || cutSupplies() < 1 || cloneFree(tent) < 1 },
           { label: "1 Steckling entsorgen", id: "del" }, { label: "Info", id: "info" }],
         onChoose(a) {
           if (a.id === "cut") cutClones(mother, tent, n => { closeAllMenus(); openDialog(`Du hast ${n} neue Stecklinge geschnitten.\n${suppliesText()}`); });
@@ -9850,7 +9900,7 @@ function receiveGoods(kind, d, qty) {
     const t = STATE.tents.find(t => isCloneTent(t) && (t.clones = t.clones || []) && cloneFree(t) >= qty);
     if (!t) return false;
     const line = localLine(d.strain, d.line);
-    for (let i = 0; i < qty; i++) t.clones.push({ strain: d.strain, line, sex: d.sex === "m" ? "m" : "f", reg: !!d.reg });
+    for (let i = 0; i < qty; i++) t.clones.push({ strain: d.strain, line, sex: d.sex === "m" ? "m" : "f", reg: !!d.reg, cutAt: freshCutAt() });
     return true;
   }
   if (qty > bagFree() + stashFree() + 1e-9) return false;
@@ -10071,6 +10121,216 @@ function openDarknet() {
   }
   show();
 }
+/* =====================================================================
+   38. SCHUTZ FÜR DAS GELD
+   ---------------------------------------------------------------------
+   Fehler bei einem Freund: Das Geld wurde nicht mehr angezeigt und er
+   konnte alles kaufen. Das passiert, wenn STATE.money durch einen Fehler
+   „NaN“ (keine Zahl) wird: Dann ist „Geld < Preis“ immer falsch.
+   Jetzt: STATE.money nimmt nur noch gültige Zahlen an. Ein ungültiger
+   Wert wird abgewiesen (das Geld bleibt, wie es war), protokolliert und
+   oben als Fehler gemeldet. Beim Laden wird ein kaputter Wert repariert.
+   ===================================================================== */
+function guardMoney() {
+  if (!STATE) return;
+  const d = Object.getOwnPropertyDescriptor(STATE, "money");
+  if (d && d.get) return;                                  // schon geschützt
+  let v = typeof STATE.money === "number" ? STATE.money : NaN;
+  if (!Number.isFinite(v)) {
+    v = Number.isFinite(STATE.lastGoodMoney) ? STATE.lastGoodMoney : 0;
+    STATE.moneyRepaired = (STATE.moneyRepaired || 0) + 1;
+    setTimeout(() => showBanner("Geld-Fehler repariert"), 1200);
+  }
+  Object.defineProperty(STATE, "money", {
+    enumerable: true, configurable: true,
+    get() { return v; },
+    set(n) {
+      if (typeof n !== "number" || !Number.isFinite(n)) {
+        const where = (new Error().stack || "").split("\n").slice(2, 5).map(l => l.trim()).join(" | ");
+        console.error("Ungültiger Geldwert abgewiesen:", n, where);
+        (STATE.moneyErrors = STATE.moneyErrors || []).unshift({ at: Date.now(), where: where.slice(0, 300) });
+        STATE.moneyErrors.length = Math.min(STATE.moneyErrors.length, 5);
+        try { showBanner("Fehler beim Geld abgefangen"); } catch (e) { }
+        return;
+      }
+      v = Math.round(n * 100) / 100;
+      STATE.lastGoodMoney = v;
+    },
+  });
+}
+const _loadGameMG = loadGame;
+loadGame = function () { const r = _loadGameMG(); guardMoney(); return r; };
+const _resetGameMG = resetGame;
+resetGame = function () { _resetGameMG(); guardMoney(); };
+// Sicherheitsnetz: falls STATE irgendwo neu gesetzt wird
+const _updateMG = update;
+update = function (dt) { if (STATE) guardMoney(); _updateMG(dt); };
+/* =====================================================================
+   39. BEDIENUNG & ÜBERSICHT
+   ---------------------------------------------------------------------
+   - Steuerkreuz (Touch): Finger kann über das Kreuz gleiten, die Richtung
+     wechselt ohne Loslassen.
+   - Tasche mit Unterpunkten: Blüten · Samen · Stecklinge · Pollen ·
+     Sonstiges; Blüten und Samen sortierbar.
+   - Taschen aus dem Kleidungsladen sind an der Figur zu sehen.
+   - Zelte zeigen von außen eine Pflanzen-Leiste: ein Punkt pro Platz.
+   ===================================================================== */
+
+/* ---------------------------- STEUERKREUZ ---------------------------- */
+setupTouch = function () {
+  // alle Knöpfe außer dem Steuerkreuz wie bisher
+  document.querySelectorAll("[data-btn]").forEach(el => {
+    if (el.closest(".dpad")) return;
+    const b = el.dataset.btn;
+    const down = e => { e.preventDefault(); Input.touchUsed = true; el.classList.add("on"); Input.press(b); };
+    const up = e => { e.preventDefault(); el.classList.remove("on"); Input.release(b); };
+    el.addEventListener("pointerdown", down);
+    el.addEventListener("pointerup", up);
+    el.addEventListener("pointercancel", up);
+    el.addEventListener("pointerleave", up);
+  });
+  // Steuerkreuz: Richtung aus der Fingerposition relativ zur Mitte
+  const pad = document.querySelector(".dpad");
+  if (!pad) return;
+  const btnOf = d => pad.querySelector(`[data-btn="${d}"]`);
+  let cur = null, pid = null;
+  const set = d => {
+    if (d === cur) return;
+    if (cur) { Input.release(cur); const e = btnOf(cur); if (e) e.classList.remove("on"); }
+    cur = d;
+    if (d) { Input.touchUsed = true; Input.press(d); const e = btnOf(d); if (e) e.classList.add("on"); }
+  };
+  const dirAt = e => {
+    const r = pad.getBoundingClientRect(), dx = e.clientX - (r.left + r.width / 2), dy = e.clientY - (r.top + r.height / 2);
+    if (Math.hypot(dx, dy) < r.width * 0.12) return cur;          // kleine tote Zone in der Mitte: Richtung bleibt
+    return Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? "right" : "left") : (dy > 0 ? "down" : "up");
+  };
+  pad.addEventListener("pointerdown", e => { e.preventDefault(); pid = e.pointerId; try { pad.setPointerCapture(pid); } catch (x) { } set(dirAt(e)); });
+  pad.addEventListener("pointermove", e => { if (e.pointerId !== pid) return; e.preventDefault(); set(dirAt(e)); });
+  const end = e => { if (e.pointerId !== pid) return; e.preventDefault(); pid = null; set(null); };
+  pad.addEventListener("pointerup", end);
+  pad.addEventListener("pointercancel", end);
+  pad.style.touchAction = "none";
+};
+
+/* ---------------------------- TASCHE MIT UNTERPUNKTEN ---------------------------- */
+const BUD_SORTS = [
+  ["Name", (a, b) => STRAINS[a.strain].name.localeCompare(STRAINS[b.strain].name, "de") || b.quality - a.quality],
+  ["Qualität", (a, b) => b.quality - a.quality],
+  ["Wert", (a, b) => b.value / b.grams - a.value / a.grams],
+  ["Menge", (a, b) => b.grams - a.grams],
+  ["Seltenheit", (a, b) => b.rarity - a.rarity || STRAINS[a.strain].name.localeCompare(STRAINS[b.strain].name, "de")],
+];
+const SEED_SORTS = [
+  ["Name", (a, b) => ITEMS[a].name.localeCompare(ITEMS[b].name, "de")],
+  ["Seltenheit", (a, b) => STRAINS[ITEMS[b].strain].rarity - STRAINS[ITEMS[a].strain].rarity || ITEMS[a].name.localeCompare(ITEMS[b].name, "de")],
+  ["Anzahl", (a, b) => invCount(b) - invCount(a)],
+];
+const bagSort = () => (STATE.bagSort = STATE.bagSort || { buds: 0, seeds: 0 });
+const allClones = () => STATE.tents.filter(t => isCloneTent(t)).flatMap(t => cloneGroups(t = Object.assign(t, { clones: t.clones || [] })));
+openBagMenu = function () {
+  const others = Object.keys(CAT_LABELS).filter(c => !["seed", "pollen"].includes(c)).flatMap(c => invOf(c));
+  const build = () => [
+    { label: "Blüten", right: `${STATE.buds.length ? fmtKg(sumG(STATE.buds)) : "–"}`, id: "buds" },
+    { label: "Samen", right: String(invOf("seed").reduce((n, id) => n + invCount(id), 0)), id: "seeds" },
+    { label: "Stecklinge", right: String(allClones().reduce((n, c) => n + c.idx.length, 0)), id: "clones" },
+    { label: "Pollen", right: String(invOf("pollen").reduce((n, id) => n + invCount(id), 0)), id: "pollen" },
+    { label: "Sonstiges", right: String(others.length), id: "other" },
+  ];
+  openMenu({
+    title: "TASCHE", items: build(), stay: true,
+    footer: () => `Blüten ${fmtKg(sumG(STATE.buds))} / ${fmtKg(bagMax())}`,
+    onChoose(it) {
+      if (it.id === "buds") openBudList();
+      else if (it.id === "seeds") openSeedList();
+      else if (it.id === "clones") openCloneList();
+      else if (it.id === "pollen") openItemList("POLLEN", invOf("pollen"), "Keine Pollen. Die sammelst du von Pflanzen, die Pollen abgeben.");
+      else openItemList("SONSTIGES", Object.keys(CAT_LABELS).filter(c => !["seed", "pollen"].includes(c)).flatMap(c => invOf(c)), "Nichts weiter dabei.");
+    },
+  });
+};
+function sortItem(kind, sorts) { return { label: `Sortieren: ${sorts[bagSort()[kind] % sorts.length][0]}`, id: "_sort", color: "#3868c8" }; }
+function openBudList() {
+  const build = () => [sortItem("buds", BUD_SORTS), ...STATE.buds.slice().sort(BUD_SORTS[bagSort().buds % BUD_SORTS.length][1])
+    .map(b => ({ label: STRAINS[b.strain].name + (b.line ? " " + lineName(b.line).replace("Linie ", "L") : "") + " Q" + b.quality, right: fmtG(b.grams), color: RARITIES[b.rarity].color, bud: b }))];
+  openMenu({
+    title: "BLÜTEN", items: build(), stay: true, footer: () => `${fmtKg(sumG(STATE.buds))} / ${fmtKg(bagMax())}`,
+    onChoose(it) {
+      if (it.id === "_sort") { bagSort().buds++; saveGame(); Sound.select(); const m = GAME.menus[GAME.menus.length - 1]; m.items = build(); return; }
+      openDialog(budInfo(it.bud));
+    },
+  });
+}
+function openSeedList() {
+  const build = () => [sortItem("seeds", SEED_SORTS), ...invOf("seed").sort(SEED_SORTS[bagSort().seeds % SEED_SORTS.length][1])
+    .map(id => ({ label: ITEMS[id].name, right: "×" + invCount(id), color: RARITIES[STRAINS[ITEMS[id].strain].rarity].color, id }))];
+  openMenu({
+    title: "SAMEN", items: build(), stay: true,
+    onChoose(it) {
+      if (it.id === "_sort") { bagSort().seeds++; saveGame(); Sound.select(); const m = GAME.menus[GAME.menus.length - 1]; m.items = build(); return; }
+      openDialog(itemInfo(it.id));
+    },
+  });
+}
+function openCloneList() {
+  const list = allClones().sort((a, b) => STRAINS[a.strain].name.localeCompare(STRAINS[b.strain].name, "de"));
+  openMenu({
+    title: "STECKLINGE", items: list.map(c => ({ label: cloneLabel(c), right: "×" + c.idx.length, color: RARITIES[STRAINS[c.strain].rarity].color, c })),
+    empty: "Keine Stecklinge. Sie stehen im Stecklingszelt.",
+    onChoose(it) { openDialog(`${cloneLabel(it.c)} · ${it.c.idx.length} Stück\nSie stehen im Stecklingszelt. Zum Blühen: im Growzelt auf einem leeren Platz „Steckling einpflanzen“.`); },
+  });
+}
+function openItemList(title, ids, empty) {
+  openMenu({ title, items: ids.map(id => ({ label: ITEMS[id].name, right: "×" + invCount(id), id })), empty, onChoose(it) { openDialog(itemInfo(it.id)); } });
+}
+
+/* ---------------------------- TASCHE AN DER FIGUR ---------------------------- */
+const BAG_COL = { sling: ["#8a5a30", "#5a3a1c"], backpack: ["#3a6ab0", "#244a80"], duffel: ["#2c2c34", "#5a5a66"] };
+const _drawCharacterQ = drawCharacter;
+drawCharacter = function (ctx2, sprites, dir, frame, bob, x, y) {
+  const bag = sprites === PLAYER_SPRITES && STATE && STATE.outfit && STATE.outfit.bag && CLOTHES[STATE.outfit.bag];
+  const look = bag && bag.look, [c1, c2] = look ? BAG_COL[look] : [];
+  const by = y - 4 + bob;                                      // Oberkante des Oberkörpers
+  const P = (dx, dy, w, h, col) => px(ctx2, col, x + dx, by + dy, w, h);
+  // Rucksack von hinten/seitlich wird VOR der Figur gezeichnet (liegt dahinter)
+  if (look === "backpack" && (dir === "left" || dir === "right")) { const bx = dir === "right" ? 1 : 11; P(bx, 10, 4, 6, C.ink); P(bx + 1, 11, 2, 4, c1); }
+  _drawCharacterQ(ctx2, sprites, dir, frame, bob, x, y);
+  if (!look) return;
+  if (look === "backpack") {
+    if (dir === "up") { P(4, 10, 8, 7, C.ink); P(5, 11, 6, 5, c1); P(5, 14, 6, 1, c2); P(7, 12, 2, 1, C.metalLt); }
+    else if (dir === "down") { P(4, 10, 1, 5, c2); P(11, 10, 1, 5, c2); }
+  } else if (look === "sling") {
+    const flip = dir === "left" || dir === "up";
+    for (let i = 0; i < 4; i++) P(flip ? 10 - i : 5 + i, 10 + i, 1, 1, c2);           // Gurt quer über die Brust
+    const bx = flip ? 2 : 10; P(bx, 13, 5, 4, C.ink); P(bx + 1, 14, 3, 2, c1);
+  } else if (look === "duffel") {
+    const side = dir === "left" ? 0 : 11;
+    if (dir !== "up") { P(side === 0 ? 3 : 11, 10, 1, 5, c2); }
+    P(side - (side ? 0 : 1), 14, 6, 5, C.ink); P(side + (side ? 1 : 0), 15, 4, 3, c1); P(side + (side ? 1 : 0), 16, 4, 1, c2);
+  }
+};
+
+/* ---------------------------- ZELT: PFLANZEN-LEISTE ---------------------------- */
+// Ein Punkt pro Platz: grau = leer, grün = wächst (größer je weiter), lila = Blüte, gold blinkend = erntereif, blauer Tropfen = Durst
+const _drawTentQ = OBJECT_TYPES.growTent.draw;
+OBJECT_TYPES.growTent.draw = function (ctx2, x, y, o, t) {
+  _drawTentQ.call(this, ctx2, x, y, o, t);
+  const tent = o.tent;
+  if (!tent || !tent.plants || !tent.plants.length || (typeof isCloneTent === "function" && isCloneTent(tent))) return;
+  const n = tent.plants.length, W = o.w * 16, step = Math.min(5, Math.floor((W - 4) / n)), bw = n * step + 2, bx = x + Math.round((W - bw) / 2), by = y - 20;
+  px(ctx2, C.ink, bx - 1, by - 1, bw + 2, 9); px(ctx2, "#1e1e2a", bx, by, bw, 7);
+  const auto = !!tentAddon(tent, "water");
+  tent.plants.forEach((pl, i) => {
+    const cx = bx + 1 + i * step;
+    if (!pl) { px(ctx2, "#505060", cx + 1, by + 3, 2, 2); return; }
+    const st = plantStage(pl), prog = plantProgress(pl);
+    if (st >= 5) { px(ctx2, Math.floor(t * 3) % 2 ? "#f0d048" : "#c8a020", cx, by + 1, 4, 5); return; }
+    if (st >= BLOOM_STAGE) { px(ctx2, "#b070e0", cx, by + 1, 4, 5); return; }
+    const h = 1 + Math.round(prog / 0.6 * 4);                  // wächst mit dem Fortschritt (bis zur Blüte)
+    px(ctx2, "#5ab04a", cx, by + 6 - h, 4, h);
+    if (!auto && pl.water <= 0) px(ctx2, "#58a8f0", cx + 1, by - 4, 2, 3);
+  });
+};
 
 /* ---------------------------------------------------------------------
    START
