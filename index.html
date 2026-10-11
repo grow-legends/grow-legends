@@ -2590,6 +2590,7 @@ function harvestBud(tent, slot) {
   if (pl.line && !pl.owner) bud.line = pl.line;                               // Linie (36. Stecklinge)
   if (typeof budLabValues === "function") Object.assign(bud, budLabValues(bud.strain, bud.quality, true, bud.line));
   if (bud.line && typeof lineOf === "function" && (lineOf(bud.line) || {}).tested) { bud.tested = true; bud.value = Math.round(bud.value * TESTED_BONUS * 100) / 100; }
+  if (bud.line && typeof lineOf === "function" && (lineOf(bud.line) || {}).cupWinner) { bud.cupWinner = true; bud.value = Math.round(bud.value * CUP_WIN_BONUS * 100) / 100; }   // 41. Cup Winner
   STATE.buds.push(bud);
   tent.plants[slot] = null;
   saveGame();
@@ -8091,7 +8092,7 @@ function openFurnitureShop() {
     onChoose(c) {
       openMenu({
         style: "shop", title: c.label, stay: true,
-        items: Object.keys(FURNITURE).filter(id => FURNITURE[id].cat === c.cat).map(id => ({ label: FURNITURE[id].name, right: euro(FURNITURE[id].price), desc: ITEMS[id].desc, id })),
+        items: Object.keys(FURNITURE).filter(id => FURNITURE[id].cat === c.cat && !FURNITURE[id].prize).map(id => ({ label: FURNITURE[id].name, right: euro(FURNITURE[id].price), desc: ITEMS[id].desc, id })),
         onChoose(it) {
           if (STATE.money < ITEMS[it.id].price) { Sound.bump(); openDialog("Dafür reicht dein Geld nicht."); return; }
           openQtyPicker(it.id, n => {
@@ -9523,7 +9524,7 @@ function newLine(strain) {
   return id;
 }
 const lineOf = id => id && lines()[id];
-const lineName = id => { const l = lineOf(id); return l ? `Linie ${l.n}` : ""; };
+const lineName = id => { const l = lineOf(id); return l ? `Linie ${l.n}${l.cupWinner ? " ★Cup" : ""}` : ""; };
 const strainTested = k => !!(STATE && STATE.testedStrains && STATE.testedStrains[k]);
 // neue Pflanze aus Samen = neue Linie
 const _plantSeedLC = plantSeed;
@@ -10430,6 +10431,8 @@ const REP_STEPS = [0, 10, 25, 50, 100, 175, 275, 400, 600, 850];   // Aura ab de
 const REP_PER_STEP = 0.10;                                          // +10 % Auftragsgröße je Stufe
 function repChange(n) { if (!STATE) return; STATE.rep = (STATE.rep || 0) + n; saveGame(); }
 function auraPoints() { return Math.max(0, (typeof auraTotal === "function" ? auraTotal() : 0) + (STATE && STATE.rep || 0)); }
+const REP_NAMES = ["Unbekannt", "Neuling", "Hobbygärtner", "Geheimtipp", "Insider", "Kenner", "Meistergrower", "Szenegröße", "Ikone", "Legende"];
+const repName = () => REP_NAMES[repStage() - 1];
 function repStage() { const a = auraPoints(); let s = 1; REP_STEPS.forEach((v, i) => { if (a >= v) s = i + 1; }); return s; }
 function repOrderFactor() { return 1 + REP_PER_STEP * (repStage() - 1); }
 // Stammkunden: Wartezeit bis zum nächsten Auftrag kürzer
@@ -10468,6 +10471,14 @@ setQuest = function (id, step, silent) {
 const bredCount = () => (STATE.customStrains || []).filter(e => !e.unnamed).length;
 function checkProgressXP() {
   if (!STATE || XP_SILENT) return;
+  // Ruf-Stufe gestiegen/gesunken: kurz anzeigen
+  const rst = repStage();
+  if (STATE.repSeen === undefined) STATE.repSeen = rst;
+  if (rst !== STATE.repSeen) {
+    showBanner(rst > STATE.repSeen ? `Ruf gestiegen: ${repName()}!` : `Ruf gesunken: ${repName()}`);
+    if (rst > STATE.repSeen) addMessage("Skills", `Dein Ruf ist gestiegen: ${repName()} (Stufe ${rst}/10). Deine Kunden bestellen jetzt ${Math.round((repOrderFactor() - 1) * 100)} % mehr.`);
+    STATE.repSeen = rst; saveGame();
+  }
   const d = (STATE.discovered || []).length, b = bredCount();
   if (STATE.xpDiscN === undefined) STATE.xpDiscN = d;
   if (STATE.xpBredN === undefined) STATE.xpBredN = b;
@@ -10550,7 +10561,7 @@ renderPhone = function () {
   px(ctx, "#c8c8d0", sx + 6, sy + 25, sw - 12, 3); px(ctx, "#40b060", sx + 6, sy + 25, Math.round((sw - 12) * (xp - a) / (b - a)), 3);
   const pts = skillPoints();
   drawText(ctx, `Punkte: ${pts}`, sx + 6, sy + 31, pts > 0 ? C.red : "#707080", null);
-  const rs = `Ruf ${repStage()}/10`; drawText(ctx, rs, sx + sw - 6 - textWidth(rs), sy + 31, "#9a58b8", null);
+  const rs = repName(); drawText(ctx, rs, sx + sw - 6 - textWidth(rs), sy + 31, "#9a58b8", null);
   // Liste: je Fertigkeit 2 Zeilen, Ast-Überschriften dazwischen
   const rows = [];
   PERKS.forEach((p, i) => {
@@ -10580,6 +10591,284 @@ renderPhone = function () {
   const p = PERKS[sc.psel];
   const hint = sc.pconfirm === p.id ? `Nochmal A: ${p.name} lernen` : pts > 0 && perkOpen(p) && perkRank(p.id) < p.max ? "A: Lernen · B: Zurück" : "B: Zurück";
   drawText(ctx, hint, sx + 6, sy + sh - 14, sc.pconfirm === p.id ? C.red : "#707080", null);
+};
+/* =====================================================================
+   41. CUPS IM STUDENTENWOHNHEIM (nur Online-Version)
+   ---------------------------------------------------------------------
+   - Jeden Tag ein Cup. Einsendeschluss 20:00 Uhr ECHTZEIT (deutsche Zeit).
+     Wer nach 20:00 einreicht, ist automatisch beim Cup am nächsten Tag.
+   - Teilnahme kostenlos, aber man gibt 50 g EINER Sorte + Linie ab.
+     Unbegrenzt viele Spieler. Unter 10 Teilnehmern füllen NPC-Grower mit
+     gewürfelten Sorten auf.
+   - 10 Juroren werden für jeden Cup-Tag gewürfelt (für alle Spieler gleich,
+     aus dem Datum berechnet). Jeder hat 1–2 Vorlieben. Bewertet werden
+     THC, Terpene, Aroma, Qualität (+ Seltenheit / getestet).
+   - Ergebnis nach 20:00 per SMS. Platz 1–3: Geld + Pokal (Deko mit Aura)
+     + XP. Die Linie des Siegers wird „Cup Winner“ (+20 % Wert).
+   - Gemeinschaftsraum im Wohnheim: Organisator Jay + Tafel mit Rangliste.
+   ===================================================================== */
+const CUP_GRAMS = 50, CUP_HOUR = 20, CUP_SLOTS = 10, CUP_JUDGES = 10, CUP_WIN_BONUS = 1.2;
+const CUP_PRIZES = [
+  { money: 100000, trophy: "deco_trophy_gold",   xp: 2000 },
+  { money: 50000,  trophy: "deco_trophy_silver", xp: 1000 },
+  { money: 25000,  trophy: "deco_trophy_bronze", xp: 500 },
+];
+const CUP_ENTER_XP = 25;
+const cupOnline = () => !!(window.POKEBUDS_ONLINE && window.CUPS);
+
+/* ---------------------------- ZEIT (deutsche Zeit) ---------------------------- */
+function berlinNow() {
+  const p = {};
+  for (const x of new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Berlin", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).formatToParts(new Date())) p[x.type] = x.value;
+  return { date: `${p.year}-${p.month}-${p.day}`, h: +p.hour % 24, m: +p.minute };
+}
+function addDays(d, n) { const t = new Date(d + "T12:00:00Z"); t.setUTCDate(t.getUTCDate() + n); return t.toISOString().slice(0, 10); }
+const cupDateNow = () => { const b = berlinNow(); return b.h < CUP_HOUR ? b.date : addDays(b.date, 1); };
+const cupFinished = d => { const b = berlinNow(); return b.date > d || (b.date === d && b.h >= CUP_HOUR); };
+const lastFinishedCup = () => { const b = berlinNow(); return b.h >= CUP_HOUR ? b.date : addDays(b.date, -1); };
+const fmtDate = d => d.slice(8, 10) + "." + d.slice(5, 7) + ".";
+
+/* ---------------------------- FESTER ZUFALL (aus dem Datum) ---------------------------- */
+function seeded(str) {
+  let h = 1779033703 ^ str.length;
+  for (let i = 0; i < str.length; i++) { h = Math.imul(h ^ str.charCodeAt(i), 3432918353); h = (h << 13) | (h >>> 19); }
+  let a = h >>> 0;
+  return () => { a |= 0; a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+}
+const cpick = (rng, arr) => arr[Math.floor(rng() * arr.length)];
+
+/* ---------------------------- JUROREN ---------------------------- */
+const JUDGE_NAMES = ["Kalle", "Mia", "Toni", "Jule", "Ben", "Lea", "Finn", "Nora", "Paul", "Ella", "Jonas", "Lina", "Max", "Zoe", "Elias", "Hanna",
+  "Leon", "Sophie", "Noah", "Emma", "Luis", "Clara", "Theo", "Ida", "Milo", "Greta", "Emil", "Frieda", "Oskar", "Mara"];
+const JUDGE_PREFS = [
+  { id: "strong",  short: "stark",    txt: "mag es stark (viel THC)",       f: e => clamp((e.thc - 10) / 28, 0, 1) },
+  { id: "mild",    short: "mild",     txt: "will es mild (max. 15 % THC)",  f: e => e.thc <= 15 ? 1 : clamp(1 - (e.thc - 15) / 10, 0, 1) },
+  { id: "terp",    short: "Terpene",  txt: "achtet auf Terpene",            f: e => clamp(e.terp / 3, 0, 1) },
+  { id: "quality", short: "Qualität", txt: "achtet auf Qualität",           f: e => clamp(e.quality / 100, 0, 1) },
+  { id: "rare",    short: "selten",   txt: "liebt seltene Sorten",          f: e => clamp(e.rarity / 4, 0, 1) },
+  { id: "tested",  short: "getestet", txt: "will laborgetestete Ware",      f: e => e.tested ? 1 : 0.3 },
+  ...Object.entries(TERPENES).map(([k, t]) => ({ id: "taste_" + k, short: t.taste, txt: `liebt es ${t.taste}`, f: e => e.terpType === k ? 1 : 0.2 })),
+];
+function cupJudges(date) {
+  const rng = seeded("judges|" + date), names = [...JUDGE_NAMES], out = [];
+  for (let i = 0; i < CUP_JUDGES; i++) {
+    const name = names.splice(Math.floor(rng() * names.length), 1)[0];
+    const prefs = [cpick(rng, JUDGE_PREFS)];
+    if (rng() < 0.5) { const p2 = cpick(rng, JUDGE_PREFS.filter(p => p !== prefs[0] && !(p.id === "mild" && prefs[0].id === "strong") && !(p.id === "strong" && prefs[0].id === "mild") && !(p.id.startsWith("taste_") && prefs[0].id.startsWith("taste_")))); prefs.push(p2); }
+    out.push({ name, prefs });
+  }
+  return out;
+}
+// Punkte eines Jurors: 40 % Grundqualität + 60 % seine Vorlieben → 0 … 10
+const judgeScore = (j, e) => Math.round(10 * (0.4 * clamp(e.quality / 100, 0, 1) + 0.6 * j.prefs.reduce((n, p) => n + p.f(e), 0) / j.prefs.length) * 10) / 10;
+
+/* ---------------------------- NPC-GROWER (füllen leere Plätze) ---------------------------- */
+const NPC_GROWERS = ["Big Mike", "Hazy Hank", "Lady Kush", "Doc Green", "Skunky Pete", "Maria Juana", "Captain Bong", "Mr. Nugget", "Bud Spencer Jr.", "Grandma Ganja", "Kief Richards", "Terp Tina"];
+function cupNpcEntries(date, n) {
+  const rng = seeded("npc|" + date), names = [...NPC_GROWERS], base = STRAIN_LIST.filter(k => !STRAINS[k].custom), out = [];
+  for (let i = 0; i < n; i++) {
+    const strain = cpick(rng, base), s = STRAINS[strain], quality = 45 + Math.floor(rng() * 50);
+    const f = quality / 100, thc = Math.round((THC_MIN + (s.thcMax - THC_MIN) * f) * 10) / 10, terp = Math.round((TERP_MIN + (s.terpMax - TERP_MIN) * f) * 100) / 100;
+    out.push({ player: names.splice(Math.floor(rng() * names.length), 1)[0], npc: true,
+      entry: { strain, name: s.name, quality, thc, terp, terpType: s.terp, rarity: s.rarity, tested: rng() < 0.5, tier: s.tier } });
+  }
+  return out;
+}
+// Rangliste eines Cup-Tags (für alle Spieler gleich): echte Einträge (nach Zeit) + NPCs bis 10
+function cupRanking(date, rows) {
+  const all = rows.map(r => ({ player: r.player, user_id: r.user_id, entry: r.entry }));
+  if (all.length < CUP_SLOTS) all.push(...cupNpcEntries(date, CUP_SLOTS - all.length));
+  const judges = cupJudges(date);
+  all.forEach((x, i) => { x.order = i; x.scores = judges.map(j => judgeScore(j, x.entry)); x.total = Math.round(x.scores.reduce((a, b) => a + b, 0) * 10) / 10; });
+  all.sort((a, b) => b.total - a.total || a.order - b.order);
+  all.forEach((x, i) => x.place = i + 1);
+  return all;
+}
+
+/* ---------------------------- POKALE (Deko mit Aura) ---------------------------- */
+const TROPHY_COL = { gold: ["#f0d048", "#c8a048"], silver: ["#d8d8e0", "#a0a0b0"], bronze: ["#d89058", "#a86838"] };
+for (const [k, [c1, c2]] of Object.entries(TROPHY_COL)) {
+  OBJECT_TYPES["trophy_" + k] = { w: 1, h: 1, solid: true, draw(ctx, x, y, o, t) {
+    px(ctx, C.ink, x + 3, y + 11, 10, 4); px(ctx, C.woodDk, x + 4, y + 12, 8, 2);           // Sockel
+    px(ctx, C.ink, x + 6, y + 6, 4, 6); px(ctx, c2, x + 7, y + 7, 2, 5);                     // Stiel
+    px(ctx, C.ink, x + 3, y - 4, 10, 11); px(ctx, c1, x + 4, y - 3, 8, 9); px(ctx, c2, x + 9, y - 3, 3, 9);   // Becher
+    px(ctx, C.ink, x + 1, y - 2, 3, 5); px(ctx, C.ink, x + 12, y - 2, 3, 5); px(ctx, c1, x + 2, y - 1, 1, 3); px(ctx, c1, x + 13, y - 1, 1, 3); // Henkel
+    if (Math.floor(t * 2) % 4 === 0) px(ctx, C.white, x + 5, y - 2, 1, 2);
+  } };
+}
+Object.assign(FURNITURE, {
+  deco_trophy_gold:   { cat: "deco", name: "Gold-Pokal (Cup)",   price: 0, obj: "trophy_gold",   aura: 10, prize: true },
+  deco_trophy_silver: { cat: "deco", name: "Silber-Pokal (Cup)", price: 0, obj: "trophy_silver", aura: 6,  prize: true },
+  deco_trophy_bronze: { cat: "deco", name: "Bronze-Pokal (Cup)", price: 0, obj: "trophy_bronze", aura: 3,  prize: true },
+});
+for (const id of ["deco_trophy_gold", "deco_trophy_silver", "deco_trophy_bronze"]) {
+  const f = FURNITURE[id];
+  ITEMS[id] = { cat: "deco", name: f.name, price: 0, desc: `Gewonnen beim Cup im Wohnheim. Deko mit Aura ${f.aura}: steigert deinen Ruf. Aufstellen über Menü → Einrichten.` };
+}
+
+/* ---------------------------- WOHNHEIM: GEMEINSCHAFTSRAUM ---------------------------- */
+const DORM_TILES = [
+  "TTTTTTTTTTTTTTTT",  // 0
+  "TFFFFFFFFFFFFFFT",  // 1
+  "TooooooooooooooT",  // 2
+  "TooooooooooooooT",  // 3
+  "TooorrrrrrrroooT",  // 4
+  "TooorrrrrrrroooT",  // 5
+  "TooorrrrrrrroooT",  // 6
+  "TooooooooooooooT",  // 7
+  "TooooooooooooooT",  // 8
+  "TooooooooooooooT",  // 9
+  "TTTTTTTeeTTTTTTT",  // 10
+];
+NPC_LOOKS.jay = { r: "#e07830", R: "#b05a20", h: "#2a1e18", H: "#4a3628", p: "#3a4a6a", P: "#283450" };
+MAPS.dorm = {
+  name: "Wohnheim · Gemeinschaftsraum", tileset: "indoor", bg: C.black,
+  tiles: DORM_TILES, collision: DORM_TILES.map(r => [...r].map(c => "TFX".includes(c) ? "#" : ".").join("")),
+  spawns: { entrance: { x: 7, y: 9, dir: "up" } },
+  objects: [
+    { type: "blackboard", x: 2, y: 1, interact: { kind: "cupBoard", face: "up", hint: "Rangliste" } },
+    { type: "meetingTable", x: 5, y: 2, interact: { kind: "cupJudges", face: "up", hint: "Jury-Tisch" } },
+    { type: "jewelryCase", x: 11, y: 2, interact: { kind: "dialog", face: "up", hint: "Vitrine", text: "Eine Vitrine für Cup-Pokale. Noch ist sie leer." } },
+    { type: "sofaGreen", x: 1, y: 6 }, { type: "beanBag", x: 13, y: 5 }, { type: "beanBag", x: 13, y: 7 },
+    { type: "gameTv", x: 1, y: 8 }, { type: "pizzaStack", x: 4, y: 8 }, { type: "lowTable", x: 7, y: 5 },
+    { type: "plant", x: 14, y: 2 }, { type: "plant", x: 1, y: 2 }, { type: "fairyLights", x: 6, y: 1 },
+    { type: "trigger", x: 7, y: 10, w: 2, h: 1, interact: { kind: "warp", to: "jacksonville", spawn: "fromDorm", trigger: "touch", sound: "door" } },
+  ],
+  npcs: [{ id: "jay", x: 10, y: 3, dir: "down", look: "jay", talk: "cupjay" }],
+};
+// Eingang in Jacksonville öffnen
+{
+  const i = MAPS.jacksonville.objects.findIndex(o => o.type === "trigger" && o.x === 21 && o.y === 15);
+  if (i >= 0) MAPS.jacksonville.objects[i] = { type: "trigger", x: 21, y: 15, w: 2, h: 1, interact: { kind: "warp", to: "dorm", spawn: "entrance", sound: "door", face: "up", hint: "Wohnheim betreten" } };
+  MAPS.jacksonville.spawns.fromDorm = { x: 21, y: 16, dir: "down" };
+}
+
+/* ---------------------------- EINREICHEN ---------------------------- */
+function cupStacks() {
+  const g = {};
+  for (const b of STATE.buds) {
+    if (b.owner) continue;
+    const k = b.strain + "|" + (b.line || "");
+    (g[k] = g[k] || { strain: b.strain, line: b.line || null, grams: 0 }).grams += b.grams;
+  }
+  return Object.values(g).filter(e => e.grams + 1e-9 >= CUP_GRAMS).sort((a, b) => STRAINS[a.strain].nr - STRAINS[b.strain].nr);
+}
+// 50 g nehmen (beste Qualität zuerst); Werte = Durchschnitt nach Gramm
+function cupTake(e) {
+  let left = CUP_GRAMS; const pieces = [];
+  for (const b of STATE.buds.filter(b => !b.owner && b.strain === e.strain && (b.line || null) === e.line).sort((a, b) => b.quality - a.quality)) {
+    if (left <= 0.05) break;
+    const g = Math.round(Math.min(left, b.grams) * 10) / 10;
+    pieces.push(takeFromList(STATE.buds, b, g)); left = Math.round((left - g) * 10) / 10;
+  }
+  for (const x of pieces) if (x.thc == null || x.terp == null) Object.assign(x, budLabValues(x.strain, x.quality, false, x.line));
+  const G = pieces.reduce((n, x) => n + x.grams, 0), avg = k => pieces.reduce((n, x) => n + x[k] * x.grams, 0) / G;
+  const s = STRAINS[e.strain];
+  return { pieces, entry: { strain: e.strain, name: s.name, line: e.line, lineN: (lineOf(e.line) || {}).n || null,
+    quality: Math.round(avg("quality")), thc: Math.round(avg("thc") * 10) / 10, terp: Math.round(avg("terp") * 100) / 100,
+    terpType: s.terp, rarity: s.rarity, tested: pieces.every(x => x.tested), tier: s.tier } };
+}
+function cupSubmit() {
+  const list = cupStacks();
+  if (!list.length) { openDialog(`Jay: Du brauchst ${CUP_GRAMS} g von einer Sorte (eine Linie) in deiner Tasche.`); return; }
+  openMenu({
+    title: `PROBE · ${CUP_GRAMS} G`, items: list.map(e => ({ label: stackLabel(e), right: fmtG(e.grams), color: RARITIES[STRAINS[e.strain].rarity].color, e })),
+    onChoose(it) {
+      const d = cupDateNow();
+      openDialog(`${CUP_GRAMS} g ${stackLabel(it.e)} für den Cup am ${fmtDate(d)} abgeben?\nDie Blüten bekommst du nicht zurück.`, ["Abgeben", "Abbrechen"], async c => {
+        if (c !== 0) return;
+        closeAllMenus();
+        const { pieces, entry } = cupTake(it.e);
+        saveGame();
+        openDialog("Jay: Moment, ich trag dich ein …");
+        try {
+          const date = await window.CUPS.enter(entry);
+          (STATE.cupEntries = STATE.cupEntries || {})[date] = { strain: entry.strain, line: entry.line, done: false };
+          gainXP(CUP_ENTER_XP); saveGame(); Sound.confirm();
+          GAME.dialog = null;
+          openDialog(`Jay: Bist drin! ${entry.name} beim Cup am ${fmtDate(date)}!\nJay: Einsendeschluss ist um ${CUP_HOUR}:00 Uhr – danach bewertet die Jury. Das Ergebnis kriegst du per SMS.`);
+        } catch (x) {
+          for (const p of pieces) addToList(STATE.buds, p, p.grams);           // Blüten zurück
+          saveGame(); GAME.dialog = null;
+          openDialog("Jay: Hat nicht geklappt: " + (x && x.message || x) + "\nDeine Blüten hast du zurück.");
+        }
+      });
+    },
+  });
+}
+TALKS.cupjay = () => {
+  if (!cupOnline()) { openDialog("Jay: Hey! Hier im Wohnheim steigen die Cups – aber nur in der Online-Version von Grow Legends. Da trittst du gegen echte Spieler an."); return; }
+  const d = cupDateNow(), mine = STATE.cupEntries && STATE.cupEntries[d];
+  openDialog(`Jay: Yo! Ich bin Jay und organisiere die Cups. Jeden Tag bis ${CUP_HOUR}:00 Uhr kannst du ${CUP_GRAMS} g einreichen – kostenlos. 10 Juroren bewerten, die besten 3 gewinnen Geld, Pokal und XP.` + (mine ? `\nJay: Du bist beim Cup am ${fmtDate(d)} schon dabei.` : ""),
+    mine ? ["Jury ansehen", "Rangliste", "Tschüss"] : ["Probe einreichen", "Jury ansehen", "Rangliste", "Tschüss"], c => {
+      const opt = mine ? ["jury", "board"][c] : ["submit", "jury", "board"][c];
+      if (opt === "submit") cupSubmit();
+      else if (opt === "jury") CUSTOM_INTERACTIONS.cupJudges();
+      else if (opt === "board") CUSTOM_INTERACTIONS.cupBoard();
+    });
+};
+// Jury des nächsten Cups ansehen
+CUSTOM_INTERACTIONS.cupJudges = () => {
+  Sound.select();
+  const d = cupDateNow(), js = cupJudges(d);
+  openMenu({ title: `JURY · CUP ${fmtDate(d)}`, items: js.map(j => ({ label: j.name, desc: j.prefs.map(p => p.txt).join(" · "), right: j.prefs.map(p => p.short).join(" + ") })),
+    footer: () => `Einsendeschluss ${CUP_HOUR}:00 Uhr` , onChoose(it) { openDialog(`${it.label} ${it.desc.replace(" · ", " und ")}.`); } });
+};
+// Tafel: Rangliste des letzten Cups
+CUSTOM_INTERACTIONS.cupBoard = async () => {
+  Sound.select();
+  if (!cupOnline()) { openDialog("Auf der Tafel steht: „CUP – nur in der Online-Version“."); return; }
+  const d = lastFinishedCup();
+  openDialog("Du liest die Tafel …");
+  try {
+    const [rows, next] = await Promise.all([window.CUPS.entries(d), window.CUPS.entries(cupDateNow())]);
+    GAME.dialog = null;
+    const r = cupRanking(d, rows);
+    const items = r.map(x => ({ label: `${x.place}. ${x.player}`, right: x.total.toFixed(1).replace(".", ","), color: x.place <= 3 ? ["#c8a048", "#9090a0", "#a86838"][x.place - 1] : null,
+      desc: `${x.entry.name}${x.entry.lineN ? " · Linie " + x.entry.lineN : ""}${x.npc ? " (NPC)" : ""}` }));
+    openMenu({ title: `CUP ${fmtDate(d)} · ${rows.length} SPIELER`, items, footer: () => `Nächster Cup: ${next.length} Teilnehmer`, onChoose(it) { openDialog(`${it.label}: ${it.desc} – ${it.right} Punkte`); } });
+  } catch (x) { GAME.dialog = null; openDialog("Die Tafel ist gerade nicht lesbar (keine Verbindung)."); }
+};
+
+/* ---------------------------- ERGEBNIS + PREISE ---------------------------- */
+function makeCupWinner(line, strain) {
+  const l = lineOf(line);
+  if (l) l.cupWinner = true;
+  // vorhandene Blüten dieser Linie (Tasche + Schrank) werden sofort mehr wert
+  for (const list of [STATE.buds, STATE.stash || []]) for (const b of list)
+    if (!b.owner && b.strain === strain && b.line === line && !b.cupWinner) { b.cupWinner = true; b.value = Math.round(b.value * CUP_WIN_BONUS * 100) / 100; }
+}
+let CUP_CHECKING = false, CUP_LAST_CHECK = 0;
+async function cupCheckResults() {
+  if (!cupOnline() || !STATE || CUP_CHECKING) return;
+  const open = Object.entries(STATE.cupEntries || {}).filter(([d, e]) => !e.done && cupFinished(d));
+  if (!open.length) return;
+  CUP_CHECKING = true;
+  try {
+    for (const [d, mine] of open) {
+      const rows = await window.CUPS.entries(d);
+      const r = cupRanking(d, rows), me = r.find(x => x.user_id === window.CUPS.me());
+      mine.done = true;
+      if (!me) continue;
+      mine.place = me.place; mine.total = me.total;
+      let txt = `Cup vom ${fmtDate(d)}: Du bist auf Platz ${me.place} von ${r.length} gelandet – ${me.entry.name} mit ${me.total.toFixed(1).replace(".", ",")} von 100 Punkten.`;
+      const pr = CUP_PRIZES[me.place - 1];
+      if (pr) {
+        STATE.money += pr.money; invAdd(pr.trophy, 1); gainXP(pr.xp);
+        txt += `\nGewinn: ${euro(pr.money)}, ${ITEMS[pr.trophy].name} und ${pr.xp} XP.`;
+        if (me.place === 1 && me.entry.line) { makeCupWinner(me.entry.line, me.entry.strain); txt += `\nDeine ${me.entry.name} · Linie ${me.entry.lineN} ist jetzt CUP WINNER: +${Math.round((CUP_WIN_BONUS - 1) * 100)} % Wert!`; }
+        else if (me.place === 1) txt += "\nDeine Sorte ist jetzt Cup Winner!";
+      }
+      addMessage("Cup-Jury", txt); smsPing("Cup-Jury");
+      saveGame();
+    }
+  } catch (x) { /* keine Verbindung: später nochmal */ }
+  CUP_CHECKING = false;
+}
+const _updateCup = update;
+update = function (dt) {
+  _updateCup(dt);
+  if (Date.now() - CUP_LAST_CHECK > 30000) { CUP_LAST_CHECK = Date.now(); cupCheckResults(); }
 };
 
 /* ---------------------------------------------------------------------
@@ -10748,6 +11037,12 @@ window.STRAIN_DB = {
 
 /* ---------------------------- DARKNET (Datenbank) ---------------------------- */
 const dnErr = e => { throw new Error((e && e.message) || "Keine Verbindung"); };
+// Cups im Wohnheim (41.): Eintragen nur über die Datenbank-Funktion (prüft 20:00-Uhr-Schluss)
+window.CUPS = {
+  me: () => ONLINE.user && ONLINE.user.id,
+  async enter(entry) { const { data, error } = await ONLINE.sb.rpc("cup_enter", { entry }); if (error) throw new Error(/schon dabei/.test(error.message) ? "Du bist bei diesem Cup schon dabei." : error.message); return data; },
+  async entries(date) { const { data, error } = await ONLINE.sb.from("cup_entries").select("user_id, player, entry, created_at, id").eq("cup_date", date).order("id", { ascending: true }); if (error) throw new Error(error.message); return data || []; },
+};
 window.DARKNET = {
   me: () => ONLINE.user && ONLINE.user.id,
   async wallet() { const { data, error } = await ONLINE.sb.from("wallets").select("btc").eq("user_id", ONLINE.user.id).maybeSingle(); if (error) dnErr(error); return data ? +data.btc : 0; },
