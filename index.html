@@ -2431,7 +2431,7 @@ for (const [id, s] of Object.entries(STRAINS)) {
   ITEMS["seed_" + id + "_f"] = { cat: "seed", name: s.name + " ♀", price: fem, strain: id, sex: "f",
     desc: `Feminisierte Samen: immer weiblich. ${s.type} · ca. ${s.growMin} min.` };
   ITEMS["seed_" + id + "_r"] = { cat: "seed", name: s.name + " (reg.)", price: reg, strain: id, sex: "r",
-    desc: `Reguläre Samen: männlich oder weiblich (50/50), stabiler: +25 % Ertrag. ${s.type} · ca. ${s.growMin} min.` };
+    desc: `Reguläre Samen: männlich oder weiblich (50/50), stärker: Blüten +15 % Wert. ${s.type} · ca. ${s.growMin} min.` };
 }
 
 // Stammbaum bis zu den Startsorten (für Anzeige / spätere Sortenliste)
@@ -2492,7 +2492,8 @@ function plantCare(pl) { const t = pl.wetMs + pl.dryMs; return t > 0 ? pl.wetMs 
 const fmtPct = f => (f >= 0 ? "+" : "-") + Math.round(Math.abs(f) * 100) + " %";
 function plantDryShare(pl) { return 1 - plantCare(pl); }        // Wassermangel: 0 … 1
 const DRY_Q_PER_10 = 4;
-const REG_YIELD_BONUS = 1.25;                                     // reguläre Samen: +25 % Ertrag                                           // Qualitätsabzug pro 10 % Wassermangel
+const REG_YIELD_BONUS = 1.25;                                     // (nicht mehr benutzt)
+const REG_VALUE_BONUS = 1.15;                                     // reguläre Samen: stärker → Blüten +15 % Wert                                     // reguläre Samen: +25 % Ertrag                                           // Qualitätsabzug pro 10 % Wassermangel
 // Männchen/besprühte Pflanzen bleiben im Pollen-Stadium stehen (Mitte der Blüte), bis man sie entfernt
 function plantGrowCapMs(pl) { return plantTotalMs(pl) * (isPollenPlant(pl) && !pl.owner && pl.growMs <= plantTotalMs(pl) * POLLEN_FROM + 1 ? POLLEN_FROM : 1); }
 function plantRemainingMin(pl, tent) { return Math.ceil((plantTotalMs(pl) - pl.growMs) / plantSpeed(pl, tent) / 60000); }
@@ -2562,7 +2563,7 @@ function plantSeed(tent, slot, seedId, soilId) {
     growMs: 0, water: 100, wetMs: 0, dryMs: 0, fertVeg: null, fertBloom: null,
     // Geschlecht: feminisierte Samen immer weiblich, reguläre 50/50
     sex: ITEMS[seedId].sex === "f" ? "f" : (Math.random() < 0.5 ? "m" : "f"),
-    reg: ITEMS[seedId].sex !== "f",                        // reguläre Samen: stabiler, +25 % Ertrag
+    reg: ITEMS[seedId].sex !== "f",                        // reguläre Samen: stärker, Blüten +15 % Wert
   };
   saveGame();
 }
@@ -2581,10 +2582,11 @@ function harvestBud(tent, slot) {
   // Seltenheit gehört fest zur Sorte (Stufe), Ausnahme: fest vorgegeben (Bruder)
   const r = pl.rarity !== undefined ? pl.rarity : s.rarity;
   const strength = Math.round((s.strength * (0.8 + 0.4 * q / 100) + rnd(-1, 1)) * 10) / 10;
-  const grams = Math.round(s.yield * yieldWaterFactor(dry) * (fv ? fv.yieldM : 1) * (fb ? fb.yieldM : 1) * soil.yieldM * lamp.yieldM * (pl.reg ? REG_YIELD_BONUS : 1) * (pl.owner ? 1 : 1 + perkVal("yield") / 100) * rnd(0.95, 1.05) * 10) / 10;
+  const grams = Math.round(s.yield * yieldWaterFactor(dry) * (fv ? fv.yieldM : 1) * (fb ? fb.yieldM : 1) * soil.yieldM * lamp.yieldM * (pl.owner ? 1 : 1 + perkVal("yield") / 100) * rnd(0.95, 1.05) * 10) / 10;
   const perGram = pricePerGram(pl.strain, q);
   const bud = { id: STATE.nextBudId++, strain: pl.strain, rarity: r, quality: q, strength, grams, value: Math.round(perGram * grams * 100) / 100, harvestedAt: now() };
   if (pl.fixed) Object.assign(bud, { quality: pl.fixed.quality, strength: pl.fixed.strength, grams: pl.fixed.grams, value: pl.fixed.grams * pl.fixed.perGram });
+  if (pl.reg && !pl.fixed && !pl.owner) bud.value = Math.round(bud.value * REG_VALUE_BONUS * 100) / 100;   // reguläre Samen: +15 % Wert
   if (pl.owner) bud.owner = pl.owner;                    // gehört jemand anderem (Bruder)
   // THC + Terpene direkt beim Ernten festlegen (26_lab_dex.js), damit sie auch in Tasche/Schrank ankommen
   if (pl.line && !pl.owner) bud.line = pl.line;                               // Linie (36. Stecklinge)
@@ -2948,7 +2950,7 @@ function plantInfo(pl, tent) {
     (plantStage(pl) === 5 ? "Erntereif!" : isPollenPlant(pl) && !pl.owner ? (plantProgress(pl) >= POLLEN_FROM - 1e-6 ? "Bleibt stehen, bis du sie entfernst." : `Gibt in ca. ${minutesUntilPollen(pl, tent)} min Pollen ab.`) : `Noch ca. ${plantRemainingMin(pl, tent)} min bis zur Ernte.`) + (pl.water <= 0 ? " Die Erde ist trocken – gießen!" : "") + "\n" +
     `Wasser ${Math.round(pl.water)} % · Wassermangel: ${Math.round(plantDryShare(pl) * 100)} %\n` +
     `Ertrag durch Gießen: ${fmtPct(yieldWaterFactor(plantDryShare(pl)) - 1)}` + (plantDryShare(pl) > 0 ? ` · Qualität -${Math.round(plantDryShare(pl) * 10 * DRY_Q_PER_10)}` : "") + "\n" +
-    `Substrat: ${ITEMS[pl.soil].name}\nDünger: ${fv} / ${fb}` + (pl.reg ? "\nReguläre Samen: +25 % Ertrag" : "");
+    `Substrat: ${ITEMS[pl.soil].name}\nDünger: ${fv} / ${fb}` + (pl.reg ? "\nReguläre Samen: Blüten +15 % Wert" : "");
 }
 
 function renderTent() {
@@ -9346,7 +9348,7 @@ function registerStrain(e) {
   delete s._kind;
   CROSSES[crossKey(a, b)] = e.id;
   ITEMS["seed_" + e.id + "_f"] = { cat: "seed", name: s.name + " ♀", price: 0, strain: e.id, sex: "f", desc: `Feminisierte Samen deiner Zucht. ca. ${s.growMin} min.` };
-  ITEMS["seed_" + e.id + "_r"] = { cat: "seed", name: s.name + " (reg.)", price: 0, strain: e.id, sex: "r", desc: `Reguläre Samen deiner Zucht: 50/50, +25 % Ertrag. ca. ${s.growMin} min.` };
+  ITEMS["seed_" + e.id + "_r"] = { cat: "seed", name: s.name + " (reg.)", price: 0, strain: e.id, sex: "r", desc: `Reguläre Samen deiner Zucht: 50/50, Blüten +15 % Wert. ca. ${s.growMin} min.` };
   ITEMS["pollen_" + e.id] = { cat: "pollen", name: "Pollen: " + s.name, price: 0, strain: e.id, fem: false, desc: `Pollen eines ${s.name}-Männchens.` };
   ITEMS["pollen_" + e.id + "_f"] = { cat: "pollen", name: "Pollen: " + s.name + " (fem.)", price: 0, strain: e.id, fem: true, desc: `Pollen einer besprühten ${s.name}.` };
   if (!STRAIN_LIST.includes(e.id)) STRAIN_LIST.push(e.id);
@@ -11778,6 +11780,129 @@ openRunnerGive = function () {
     },
   });
 };
+/* =====================================================================
+   47. DIE 5 HÄUSER IN JACKSONVILLE
+   ---------------------------------------------------------------------
+   Klingeln → Bewohner öffnet → rein. Jeder hat nützliche Infos:
+   - Viktor (IT-Experte): macht Bitcoins zu sauberem Geld. Erst ansprechen,
+     dann kann man ihm Bitcoins aus der Darknet-Wallet schicken.
+     Höchstens Bitcoins im Wert von 50.000 € pro Spieltag, er nimmt 50 %.
+     Gutschrift sofort aufs Konto. Nur Online-Version (Wallet).
+   - Bernd (alter Züchter): reguläre Samen sind stärker → Blüten +15 % Wert
+   - Nina (Chemie-Studentin): Labortests, Linien
+   - Kapitän Okafor: Hafen, gesperrte Ausgänge, Bitcoin-Kurs
+   - Frau Wagner: Ruf (Kunden, Deko, Wartezeiten)
+   ===================================================================== */
+const IT_LIMIT_EUR = 50000, IT_FEE = 0.50;
+NPC_LOOKS.viktor = { r: "#202028", R: "#141418", h: "#c8c8d0", H: "#e8e8f0", p: "#3a3a44", P: "#28282e" };
+NPC_LOOKS.bernd = { r: "#6a7a3a", R: "#4a5a28", h: "#e0e0e8", H: "#ffffff", p: "#5a4a3a", P: "#3a2e24" };
+NPC_LOOKS.nina = { r: "#e8e8f0", R: "#c0c0d0", h: "#3a2418", H: "#5a3a28", p: "#4870c8", P: "#30509a" };
+NPC_LOOKS.okafor = { r: "#284a98", R: "#1a3070", h: "#1a1410", H: "#2e241c", p: "#2a2a30", P: "#18181c" };
+NPC_LOOKS.wagner = { r: "#c87090", R: "#9a5070", h: "#a8a8b0", H: "#c8c8d0", p: "#505060", P: "#383844" };
+
+const JAX_RESIDENTS = [
+  { house: 0, id: "jax_h1", name: "Haus Viktor", who: "Viktor", talk: "viktor", npc: { x: 2, y: 4, dir: "right" },
+    objects: [{ type: "pcDesk", x: 1, y: 2 }, { type: "serverRack", x: 7, y: 2 }, { type: "serverRack", x: 8, y: 2 }, { type: "pizzaStack", x: 4, y: 5 }] },
+  { house: 1, id: "jax_h2", name: "Haus Bernd", who: "Bernd", talk: "bernd", npc: { x: 5, y: 4, dir: "down" },
+    objects: [{ type: "armchair", x: 7, y: 3 }, { type: "bookshelf", x: 1, y: 1 }, { type: "plant", x: 1, y: 2 }, { type: "plant", x: 2, y: 2 }, { type: "plant", x: 8, y: 5 }] },
+  { house: 2, id: "jax_h3", name: "Haus Nina", who: "Nina", talk: "nina", npc: { x: 6, y: 4, dir: "down" },
+    objects: [{ type: "readingTable", x: 1, y: 3 }, { type: "bookshelf", x: 7, y: 1 }, { type: "lavaLamp", x: 8, y: 5 }] },
+  { house: 3, id: "jax_h4", name: "Haus Okafor", who: "Kapitän Okafor", talk: "okafor", npc: { x: 3, y: 4, dir: "down" },
+    objects: [{ type: "armchair", x: 7, y: 3 }, { type: "aquarium", x: 1, y: 2 }, { type: "clock", x: 7, y: 1 }] },
+  { house: 4, id: "jax_h5", name: "Haus Wagner", who: "Frau Wagner", talk: "wagner", npc: { x: 6, y: 3, dir: "down" },
+    objects: [{ type: "sofa", x: 1, y: 3 }, { type: "coffeeTable", x: 2, y: 4 }, { type: "tv", x: 8, y: 3 }, { type: "plant", x: 8, y: 5 }, { type: "photoFrame", x: 7, y: 1 }] },
+];
+for (const r of JAX_RESIDENTS) {
+  const h = JAX_HOUSES[r.house], W = 10, H = 8, door = 4;
+  const tiles = [];
+  for (let y = 0; y < H; y++) { let t = ""; for (let x = 0; x < W; x++) t += (y === 0 || x === 0 || x === W - 1) ? "T" : y === 1 ? "F" : y === H - 1 ? (x === door ? "d" : "T") : "o"; tiles.push(t); }
+  MAPS[r.id] = {
+    name: r.name, tileset: "indoor", bg: C.black, tiles, collision: tiles.map(t => [...t].map(c => "TF".includes(c) ? "#" : ".").join("")),
+    spawns: { entrance: { x: door, y: H - 2, dir: "up" } },
+    objects: [
+      { type: "curtainWindow", x: 3, y: 1 }, ...r.objects,
+      { type: "trigger", x: door, y: H - 1, w: 1, h: 1, interact: { kind: "warp", to: "jacksonville", spawn: "from_" + r.id, trigger: "touch", sound: "door" } },
+    ],
+    npcs: [{ id: r.talk, ...r.npc, look: r.talk, talk: r.talk }],
+  };
+  MAPS.jacksonville.spawns["from_" + r.id] = { x: h.x + 1, y: h.y + 4, dir: "down" };
+  const i = MAPS.jacksonville.objects.findIndex(o => o.type === "trigger" && o.x === h.x + 1 && o.y === h.y + 3);
+  CUSTOM_INTERACTIONS["knock_" + r.id] = () => { Sound.select(); openDialog(`Du klingelst …\n${r.who}: Komm rein!`, null, () => { Sound.door(); transitionTo(r.id, "entrance"); }); };
+  if (i >= 0) MAPS.jacksonville.objects[i] = { type: "trigger", x: h.x + 1, y: h.y + 3, w: 1, h: 1, interact: { kind: "knock_" + r.id, face: "up", hint: "Klingeln" } };
+}
+
+/* ---------------------------- VIKTOR: BITCOIN → SAUBERES GELD ---------------------------- */
+function itLeft() {
+  const d = gameDayNow();
+  if (STATE.itDay !== d) { STATE.itDay = d; STATE.itSent = 0; }
+  return Math.max(0, IT_LIMIT_EUR - (STATE.itSent || 0));
+}
+TALKS.viktor = () => {
+  const first = !flag("viktor_met");
+  if (first) {
+    setFlag("viktor_met"); saveGame();
+    openDialog("Viktor: Mach die Tür zu. … Okay.\nViktor: Ich bin Viktor. IT-Sicherheit, sagen wir mal so.\n" +
+      "Viktor: Du hast Bitcoins und brauchst sauberes Geld auf dem Konto? Schick sie mir. Ich jag sie durch ein paar Wallets und Firmenkonten, und am Ende ist es eine ganz normale Überweisung.\n" +
+      `Viktor: Aber: Höchstens Bitcoins im Wert von ${euro(IT_LIMIT_EUR)} pro Tag – sonst fällt's auf. Und ich nehm ${Math.round(IT_FEE * 100)} %.`, null, () => viktorMenu());
+    return;
+  }
+  viktorMenu();
+};
+function viktorMenu() {
+  if (!window.DARKNET) { openDialog("Viktor: Bitcoins schicken geht nur mit der Darknet-Wallet – in der Online-Version."); return; }
+  if (!flag("crypto_phone")) { openDialog("Viktor: Du hast ja gar keine Wallet. Komm wieder, wenn du Bitcoins hast."); return; }
+  const left = itLeft();
+  if (left < 1) { openDialog(`Viktor: Für heute ist Schluss – ${euro(IT_LIMIT_EUR)} am Tag, mehr nicht. Komm morgen wieder.`); return; }
+  openDialog(`Viktor: Heute geht noch Bitcoin im Wert von ${euro(left)}. Kurs: ${euro(btcRate())} pro BTC. Ich nehm ${Math.round(IT_FEE * 100)} %.`, ["Bitcoins schicken", "Tschüss"], async c => {
+    if (c !== 0) return;
+    openDialog("Viktor: Moment, ich schau in deine Wallet …");
+    let bal = 0;
+    try { bal = await window.DARKNET.wallet(); } catch (e) { GAME.dialog = null; openDialog("Viktor: Keine Verbindung. Versuch's gleich nochmal."); return; }
+    GAME.dialog = null;
+    const rate = btcRate(), maxEur = Math.min(left, bal * rate);
+    if (maxEur < 1) { openDialog("Viktor: In deiner Wallet ist nicht genug. Kauf erst Bitcoins im Darknet."); return; }
+    const vals = [5000, 10000, 25000, 50000].filter(v => v < maxEur - 0.5);
+    openMenu({
+      title: "BITCOINS SCHICKEN", footer: () => `Wallet: ${fmtBTC(bal)}`,
+      items: [...vals.map(v => ({ label: euro(v), right: fmtBTC(v / rate), eur: v })), { label: `Maximal (${euro(Math.floor(maxEur))})`, right: fmtBTC(Math.floor(maxEur) / rate), eur: Math.floor(maxEur) }],
+      onChoose(it) {
+        const btc = Math.min(bal, Math.round(it.eur / rate * 1e6) / 1e6), eur = Math.min(it.eur, Math.round(btc * rate * 100) / 100), clean = Math.round(eur * (1 - IT_FEE) * 100) / 100;
+        openDialog(`${fmtBTC(btc)} (${euro(eur)}) an Viktor schicken?\nDu bekommst ${euro(clean)} sauber aufs Konto.`, ["Schicken", "Abbrechen"], async c2 => {
+          if (c2 !== 0) return;
+          openDialog("Viktor tippt wie wild auf seiner Tastatur …");
+          try { await window.DARKNET.send(btc); }
+          catch (e) { GAME.dialog = null; openDialog("Viktor: Hat nicht geklappt: " + (e && e.message || e)); return; }
+          STATE.itSent = (STATE.itSent || 0) + eur; bankAdd(clean); saveGame(); Sound.floor();
+          if (questStep("geldwaesche") === 0) setQuest("geldwaesche", 1);
+          GAME.dialog = null;
+          openDialog(`Viktor: Erledigt. ${euro(clean)} sind auf deinem Konto – als „Beratungshonorar“.\nKontostand: ${euro(bank())}.`);
+        });
+      },
+    });
+  });
+}
+
+/* ---------------------------- WAS DIE ANDEREN ERZÄHLEN ---------------------------- */
+TALKS.bernd = () => talkCycle("bernd", "Bernd", [
+  "Ich züchte seit 40 Jahren. Und ich sag dir eins: Reguläres Saatgut ist immer stärker als feminisiertes.\nDie Genetik ist stabiler. Deshalb sind die Blüten 15 % mehr wert.",
+  "Aber Vorsicht: Bei regulären Samen wird die Hälfte männlich. Ab der Jungpflanze siehst du's am ♂.\nRaus mit den Männchen, bevor sie blühen – außer du willst Samen.",
+  "Willst du gezielt kreuzen? Sammel Pollen von einem blühenden Männchen und heb sie auf.\nDamit bestäubst du später jede blühende Pflanze, die du willst.",
+]);
+TALKS.nina = () => talkCycle("nina", "Nina", [
+  "Ich studier Chemie am Big College. Im Labor unten testet Natalie Blüten – THC, Terpene, das volle Programm.",
+  "Getestete Linien sind 5 % mehr wert. Und jede Linie hat ihre eigenen Gene – die eine ist stärker, die andere duftet mehr.\nLass deine besten Linien testen!",
+  "Dr. Brenner sucht einen Produzenten für die Forschung. Mit seiner Lizenz darfst du sogar das Gewächshaus kaufen. Aber die Lizenz ist teuer.",
+]);
+TALKS.okafor = () => talkCycle("okafor", "Kapitän Okafor", [
+  "Der Hafen ist dicht. Bootsfahrten eingestellt, bis auf Weiteres. Irgendwann fahr ich wieder raus.",
+  "Westlich und östlich von Jacksonville soll's noch mehr Städte geben. Aber die Straßen sind gesperrt.\nWer weiß, was da draußen auf einen wartet.",
+  "Mein Neffe zockt mit Bitcoins. Der Kurs schwankt jeden Tag um bis zu 5 %.\nSein Tipp: Kaufen, wenn er unten ist.",
+]);
+TALKS.wagner = () => talkCycle("wagner", "Frau Wagner", [
+  "Die Leute in der Stadt reden über dich, Kindchen! Wer gute Ware hat und zuverlässig ist, hat schnell einen Ruf.",
+  "Zufriedene Kunden bestellen mehr. Aber lass sie nicht warten – wenn ein Auftrag abläuft, redet sich das herum.",
+  "Und eine schön eingerichtete Wohnung macht Eindruck. Ein bisschen Deko, und schon halten dich alle für jemanden.",
+]);
 
 /* ---------------------------------------------------------------------
    START
@@ -11954,6 +12079,7 @@ window.CUPS = {
 window.DARKNET = {
   me: () => ONLINE.user && ONLINE.user.id,
   async wallet() { const { data, error } = await ONLINE.sb.from("wallets").select("btc").eq("user_id", ONLINE.user.id).maybeSingle(); if (error) dnErr(error); return data ? +data.btc : 0; },
+  async send(btc) { const { data, error } = await ONLINE.sb.rpc("wallet_send", { amount: btc }); if (error) dnErr(error); return +data; },
   async deposit(btc) { const { data, error } = await ONLINE.sb.rpc("wallet_deposit", { amount: btc }); if (error) dnErr(error); return +data; },
   async listings() { const { data, error } = await ONLINE.sb.from("darknet_listings").select("*").gt("qty", 0).order("created_at", { ascending: false }).limit(200); if (error) dnErr(error); return data; },
   async create(kind, data, qty, price) { const { data: row, error } = await ONLINE.sb.from("darknet_listings").insert({ kind, data, qty, price_btc: price }).select("*").single(); if (error) dnErr(error); return row; },
