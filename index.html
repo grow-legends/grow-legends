@@ -2593,6 +2593,7 @@ function harvestBud(tent, slot) {
   if (typeof budLabValues === "function") Object.assign(bud, budLabValues(bud.strain, bud.quality, true, bud.line));
   if (bud.line && typeof lineOf === "function" && (lineOf(bud.line) || {}).tested) { bud.tested = true; bud.value = Math.round(bud.value * TESTED_BONUS * 100) / 100; }
   if (bud.line && typeof lineOf === "function" && (lineOf(bud.line) || {}).cupWinner) { bud.cupWinner = true; bud.value = Math.round(bud.value * CUP_WIN_BONUS * 100) / 100; }   // 41. Cup Winner
+  if (typeof GH !== "undefined" && tent.home === GH && !pl.owner) greenhouseBud(pl, bud);   // 49. Medical-Ware
   STATE.buds.push(bud);
   tent.plants[slot] = null;
   saveGame();
@@ -5155,7 +5156,7 @@ const _invAddSB = invAdd;
 invAdd = function (id, n = 1) { _invAddSB(id, n); if (n > 0 && ITEMS[id] && ITEMS[id].cat === "seed") discover(ITEMS[id].strain); };
 // Blüten ernten = Sorte entdeckt (auch die Pflanzen des Bruders)
 const _harvestBudSB = harvestBud;
-harvestBud = function (tent, slot) { const b = _harvestBudSB(tent, slot); discover(b.strain); if (!b.owner) markGrown(b.strain); return b; };
+harvestBud = function (tent, slot) { const b = _harvestBudSB(tent, slot); discover(b.strain); if (!b.owner || b.owner === "medical") markGrown(b.strain); return b; };
 // Ältere Spielstände: vorhandene Samen/Blüten/Pflanzen nachtragen
 const _loadGameSB = loadGame;
 loadGame = function () {
@@ -6861,7 +6862,7 @@ const qmText = p => `${p.qm.toLocaleString("de-DE")} qm`;
 function propDetails(id) {
   const p = PROPERTIES[id];
   let t = `${p.name} · ${qmText(p)}\n${p.place}.\n${p.info}`;
-  for (const g of p.growrooms) t += `\nAls Grow-Raum ausbaubar: ${g.label} – Ausbau ${euro(GROWROOM_COST)}` + " (4 Reihen à 10 Pflanzen, LED, Bewässerung, Lüftung).";
+  if (!p.license) for (const g of p.growrooms) t += `\nAls Grow-Raum ausbaubar: ${g.label} – Ausbau ${euro(GROWROOM_COST)}` + " (4 Reihen à 10 Pflanzen, LED, Bewässerung, Lüftung).";
   t += `\nKaufpreis: ${euro(p.price)}`;
   return t;
 }
@@ -6895,13 +6896,13 @@ function openOffers() {
 }
 function buyProperty(id) {
   const p = PROPERTIES[id];
-  if (props().owned.length >= MAX_PROPERTIES) { openDialog(`Makler: Sie können höchstens ${MAX_PROPERTIES} Wohnungen gleichzeitig besitzen.\nMakler: Verkaufen Sie vorher eine – ich nehme sie für ${Math.round(SELL_FACTOR * 100)} % des Kaufpreises zurück.`, null, () => openMakler(true)); return; }
+  if (!PROPERTIES[id].noLimit && props().owned.filter(x => !PROPERTIES[x].noLimit).length >= MAX_PROPERTIES) { openDialog(`Makler: Sie können höchstens ${MAX_PROPERTIES} Wohnungen gleichzeitig besitzen.\nMakler: Verkaufen Sie vorher eine – ich nehme sie für ${Math.round(SELL_FACTOR * 100)} % des Kaufpreises zurück.`, null, () => openMakler(true)); return; }
   openDialog(`${p.name} für ${euro(p.price)} kaufen?\nBezahlt wird per Karte (Kontostand ${euro(bank())}).`, ["Kaufen", "Abbrechen"], c => {
     if (c !== 0) { openMakler(true); return; }
     if (bank() < p.price) { Sound.bump(); openDialog(`Makler: Auf Ihrem Konto ist dafür nicht genug sauberes Geld. Kontostand: ${euro(bank())}.\nMakler: Bargeld nehme ich nicht.`, null, () => openMakler(true)); return; }
     bankAdd(-p.price); props().owned.push(id); saveGame(); Sound.floor();
     for (const k in MAP_CACHE) delete MAP_CACHE[k];
-    openDialog(`Glückwunsch! ${p.name} gehört jetzt dir.\nMakler: Hier ist der Schlüssel. ${p.growrooms.length ? "Den Ausbau zum Grow-Raum können Sie jederzeit bei mir beauftragen." : ""}`, null, () => openMakler(true));
+    openDialog(`Glückwunsch! ${p.name} gehört jetzt dir.\nMakler: Hier ist der Schlüssel. ${p.license ? "Die Halle ist fertig eingerichtet – 8 Reihen à 10 Plätze." : p.growrooms.length ? "Den Ausbau zum Grow-Raum können Sie jederzeit bei mir beauftragen." : ""}`, null, () => openMakler(true));
   });
 }
 function openMyProps() {
@@ -6911,7 +6912,7 @@ function openMyProps() {
     onCancel: () => openMakler(true),
     onChoose(it) {
       const p = PROPERTIES[it.id], opts = [], acts = [];
-      for (const g of p.growrooms) if (!isBuilt(g.map)) { opts.push(`Ausbau ${g.label.split(" (")[0]} (${euro(GROWROOM_COST)})`); acts.push(() => buildFlow(it.id, g)); }
+      if (!p.license) for (const g of p.growrooms) if (!isBuilt(g.map)) { opts.push(`Ausbau ${g.label.split(" (")[0]} (${euro(GROWROOM_COST)})`); acts.push(() => buildFlow(it.id, g)); }
       opts.push(`Verkaufen (${euro(p.price * SELL_FACTOR)})`); acts.push(() => sellProperty(it.id));
       opts.push("Zurück"); acts.push(() => openMyProps());
       const built = p.growrooms.filter(g => isBuilt(g.map)).map(g => g.label.split(" (")[0]);
@@ -6940,7 +6941,7 @@ function storeTents(list) {
 }
 function sellProperty(id) {
   const p = PROPERTIES[id];
-  if (props().owned.length <= 1) { openDialog("Makler: Das ist Ihre einzige Wohnung. Wo wollen Sie denn dann wohnen? Kaufen Sie zuerst etwas Neues.", null, () => openMakler(true)); return; }
+  if (!PROPERTIES[id].noLimit && props().owned.filter(x => !PROPERTIES[x].noLimit).length <= 1) { openDialog("Makler: Das ist Ihre einzige Wohnung. Wo wollen Sie denn dann wohnen? Kaufen Sie zuerst etwas Neues.", null, () => openMakler(true)); return; }
   const pay = p.price * SELL_FACTOR;
   const tents = STATE.tents.filter(t => p.maps.includes(t.home) && !t.install);
   openDialog(`${p.name} für ${euro(pay)} an den Makler verkaufen?\nPflanzen und ein Grow-Raum-Ausbau gehen verloren.` + (tents.length ? ` ${tents.length} Zelt(e) werden eingelagert – du kannst sie in deiner anderen Wohnung wieder aufbauen.` : ""), ["Verkaufen", "Abbrechen"], c => {
@@ -7060,10 +7061,12 @@ function streetSpotOf(p) {
 }
 
 /* ---------------------------- AUFTRÄGE ---------------------------- */
-function freeSpot(exclude) {
+function freeSpot(exclude, person) {
   const used = new Set(streetOpen().map(p => street()[p.id].order.spot));
-  const list = Object.keys(STREET_SPOTS).filter(k => !used.has(k) && k !== exclude);
-  return pick(list.length ? list : Object.keys(STREET_SPOTS));
+  const zone = (person && person.zone) || "alt";                  // Westend-Kunden nur in Westend (47.)
+  const all = Object.keys(STREET_SPOTS).filter(k => (STREET_SPOTS[k].zone || "alt") === zone);
+  const list = all.filter(k => !used.has(k) && k !== exclude);
+  return pick(list.length ? list : all);
 }
 // Nur Sorten, die man selbst schon angebaut hat (Haken in der Sortenliste)
 function streetLog(text) { (STATE.streetLog = STATE.streetLog || []).unshift(text); STATE.streetLog.length = Math.min(STATE.streetLog.length, 5); }
@@ -7077,15 +7080,15 @@ const rarityAcc = r => ({ Ungewöhnlich: "Ungewöhnliches", Selten: "Seltenes", 
 function makeOrder(p) {
   const tier = rint(1, 4), t = nowMin();
   const o = { tier, factor: STREET_TIERS[tier], created: t };
-  if (tier === 1) Object.assign(o, { grams: 20, spot: freeSpot(), until: t + STREET_DAY });
+  if (tier === 1) Object.assign(o, { grams: 20, spot: freeSpot(undefined, p), until: t + STREET_DAY });
   else if (tier === 2) {
-    if (Math.random() < 0.5 && !streetOpen().some(q => street()[q.id].order.spot === "home"))
+    if (!p.zone && Math.random() < 0.5 && !streetOpen().some(q => street()[q.id].order.spot === "home"))
       Object.assign(o, { grams: 10, spot: "home", until: t + 120, rush: true });
-    else Object.assign(o, { grams: 20, minRarity: 1, spot: freeSpot(), until: t + STREET_DAY });
-  } else if (tier === 3) Object.assign(o, { grams: 20, strain: wantStrain(), spot: freeSpot(), until: t + STREET_DAY });
+    else Object.assign(o, { grams: 20, minRarity: 1, spot: freeSpot(undefined, p), until: t + STREET_DAY });
+  } else if (tier === 3) Object.assign(o, { grams: 20, strain: wantStrain(), spot: freeSpot(undefined, p), until: t + STREET_DAY });
   else {
-    if (Math.random() < 0.5) Object.assign(o, { grams: 10, strain: wantStrain(), spot: freeSpot(), until: t + 120, rush: true });
-    else Object.assign(o, { grams: 30, minRarity: epicUnlocked() ? 3 : 2, spot: freeSpot(), until: t + 180, rush: true });
+    if (Math.random() < 0.5) Object.assign(o, { grams: 10, strain: wantStrain(), spot: freeSpot(undefined, p), until: t + 120, rush: true });
+    else Object.assign(o, { grams: 30, minRarity: epicUnlocked() ? 3 : 2, spot: freeSpot(undefined, p), until: t + 180, rush: true });
   }
   o.grams = Math.round(o.grams * repOrderFactor() / 5) * 5;          // Ruf: größere Aufträge (34. Fortschritt)
   return o;
@@ -8740,7 +8743,7 @@ function budLabValues(strain, q, r) {
   return { thc: Math.round(thc * 10) / 10, terp: Math.round(terp * 100) / 100 };
 }
 function bestNote(b) {
-  if (b.owner) return;
+  if (b.owner && b.owner !== "medical") return;
   const best = (STATE.dexBest = STATE.dexBest || {}), cur = best[b.strain];
   best[b.strain] = { thc: Math.max(cur ? cur.thc : 0, b.thc), terp: Math.max(cur ? cur.terp : 0, b.terp) };
 }
@@ -9666,11 +9669,29 @@ TALKS.natalie = () => {
       items: list.map(e => ({ label: stackLabel(e), right: fmtG(e.grams), color: RARITIES[STRAINS[e.strain].rarity].color, e, disabled: STATE.money < labPrice() })),
       onChoose(it) {
         if (STATE.money < labPrice()) { Sound.bump(); return; }
-        STATE.money -= labPrice(); gainXP(10);
-        const p = takeSample(it.e);
-        (STATE.labTests = STATE.labTests || []).push({ strain: p.strain, line: p.line, thc: p.thc, terp: p.terp, day: gameDay() });
-        saveGame(); closeAllMenus(); Sound.select();
-        openDialog(`Du hast ${euro(labPrice())} bezahlt und ${LAB_SAMPLE_G} g ${stackLabel(it.e)} abgegeben.\nNatalie: Komm morgen wieder, dann ist das Ergebnis da.`);
+        // Mehrere Linien derselben Sorte dabei? → fragen, ob alle getestet werden sollen
+        const same = list.filter(e => e.strain === it.e.strain);
+        const run = entries => {
+          const n = Math.min(entries.length, Math.floor(STATE.money / labPrice()));
+          if (n < 1) { Sound.bump(); return; }
+          const done = entries.slice(0, n);
+          for (const e of done) {
+            STATE.money -= labPrice(); gainXP(10);
+            const p = takeSample(e);
+            (STATE.labTests = STATE.labTests || []).push({ strain: p.strain, line: p.line, thc: p.thc, terp: p.terp, day: gameDay() });
+          }
+          saveGame(); closeAllMenus(); Sound.select();
+          openDialog(n === 1 ? `Du hast ${euro(labPrice())} bezahlt und ${LAB_SAMPLE_G} g ${stackLabel(done[0])} abgegeben.\nNatalie: Komm morgen wieder, dann ist das Ergebnis da.`
+            : `Du hast ${euro(labPrice() * n)} bezahlt und ${n} Proben (${n} Linien ${STRAINS[it.e.strain].name}, je ${LAB_SAMPLE_G} g) abgegeben.` + (n < entries.length ? `\nFür die übrigen ${entries.length - n} hat dein Geld nicht gereicht.` : "") + "\nNatalie: Komm morgen wieder, dann sind die Ergebnisse da.");
+        };
+        if (same.length > 1) {
+          openDialog(`Du hast ${same.length} ungetestete Linien von ${STRAINS[it.e.strain].name} dabei. Alle testen lassen?`,
+            [`Alle ${same.length} (${euro(labPrice() * same.length)})`, `Nur ${lineName(it.e.line) || "diese"}`, "Abbrechen"], c => {
+              if (c === 0) run(same); else if (c === 1) run([it.e]);
+            });
+          return;
+        }
+        run([it.e]);
       },
     });
   });
@@ -9706,7 +9727,7 @@ function cutClones(mother, target, after) {
 const _openSlotActionsLC = openSlotActions;
 openSlotActions = function (slot) {
   const tent = GAME.screen.tent, pl = tent.plants[slot];
-  const here = cloneTentsHere().filter(t => t.clones.length);
+  const here = [...cloneTentsHere(), cloneBag()].filter(t => t.clones.length);
   if (!pl && !tent.readonly && here.length) {
     openMenu({ title: "PLATZ " + (slot + 1), items: [{ label: "Samen pflanzen", id: "seed" }, { label: "Steckling einpflanzen", id: "clone" }],
       onChoose(it) { if (it.id === "seed") { closeAllMenus(); _openSlotActionsLC(slot); } else chooseClone(tent, slot); } });
@@ -9740,8 +9761,8 @@ function cloneGroups(t) {
 }
 const cloneLabel = c => `${STRAINS[c.strain].name} · ${lineName(c.line)}${c.sex === "m" ? " ♂" : ""}${(lineOf(c.line) || {}).tested ? " ✓" : ""}`;
 function chooseClone(tent, slot) {
-  const here = cloneTentsHere().filter(t => t.clones.length);
-  const items = here.flatMap(t => cloneGroups(t).map(c => ({ label: cloneLabel(c), right: "×" + c.idx.length, c, t })));
+  const here = [...cloneTentsHere(), cloneBag()].filter(t => t.clones.length);
+  const items = here.flatMap(t => cloneGroups(t).map(c => ({ label: (t.bag ? "Tasche: " : "") + cloneLabel(c), right: "×" + c.idx.length, c, t })));
   openMenu({
     title: "STECKLING WÄHLEN", items,
     onChoose(it) {
@@ -9790,9 +9811,10 @@ openTent = function (tent) {
       openMenu({
         title: cloneLabel(it.c).toUpperCase(),
         items: [{ label: "Stecklinge schneiden", id: "cut", right: wait ? `${Math.ceil(wait / 60)} min` : supplyMissing(), disabled: wait > 0 || cutSupplies() < 1 || cloneFree(tent) < 1 },
-          { label: "1 Steckling entsorgen", id: "del" }, ...(it.c.idx.length > 1 ? [{ label: `Alle ${it.c.idx.length} entsorgen`, id: "delAll" }] : []), { label: "Info", id: "info" }],
+          { label: "Mitnehmen (Tasche)", id: "take" }, { label: "1 Steckling entsorgen", id: "del" }, ...(it.c.idx.length > 1 ? [{ label: `Alle ${it.c.idx.length} entsorgen`, id: "delAll" }] : []), { label: "Info", id: "info" }],
         onChoose(a) {
           if (a.id === "cut") cutClones(mother, tent, n => { closeAllMenus(); openDialog(`Du hast ${n} neue Stecklinge geschnitten.\n${suppliesText()}`); });
+          else if (a.id === "take") cloneTakeMenu(tent, it.c);
           else if (a.id === "delAll") openDialog(`Alle ${it.c.idx.length} Stecklinge ${cloneLabel(it.c)} entsorgen?`, ["Ja, alle", "Nein"], c => { if (c === 0) { const gone = new Set(it.c.idx.map(i => tent.clones[i])); tent.clones = tent.clones.filter(x => !gone.has(x)); saveGame(); closeAllMenus(); openDialog(`${gone.size} Stecklinge entsorgt.`); } });
           else if (a.id === "del") openDialog("Einen Steckling entsorgen?", ["Ja", "Nein"], c => { if (c === 0) { tent.clones.splice(tent.clones.indexOf(mother), 1); saveGame(); closeAllMenus(); openDialog("Steckling entsorgt."); } });
           else {
@@ -9818,7 +9840,7 @@ OBJECT_TYPES.growTent.draw = function (ctx, x, y, o, t) {
    ---------------------------------------------------------------------
    Nach Natalies Labortest:
    - Dr. Brenner (Labor 1) braucht für größere Forschungsprojekte einen
-     Produzenten. Anbaulizenz bei ihm: 5.000.000 € → Gewächshaus beim
+     Produzenten. Anbaulizenz bei ihm: 500.000 € → Gewächshaus beim
      Makler kaufbar. (Medizinischer Anbau folgt später.)
    - Der Bruder ruft an: „Check unbedingt deinen Briefkasten!“ → im
      Briefkasten liegt ein Krypto-Handy → App „Darknet“ im Smartphone.
@@ -9829,7 +9851,7 @@ OBJECT_TYPES.growTent.draw = function (ctx, x, y, o, t) {
      10 % Gebühr, Angebote unbegrenzt. Lieferung nach 1 Spieltag per Post
      in den Briefkasten im Wohnhaus.
    ===================================================================== */
-const LICENSE_PRICE = 5000000, DN_FEE = 0.10;
+const LICENSE_PRICE = 500000, DN_FEE = 0.10;
 
 /* ---------------------------- QUESTS ---------------------------- */
 QUESTS.lizenz = {
@@ -10267,7 +10289,7 @@ const SEED_SORTS = [
   ["Anzahl", (a, b) => invCount(b) - invCount(a)],
 ];
 const bagSort = () => (STATE.bagSort = STATE.bagSort || { buds: 0, seeds: 0 });
-const allClones = () => STATE.tents.filter(t => isCloneTent(t)).flatMap(t => cloneGroups(t = Object.assign(t, { clones: t.clones || [] })));
+const allClones = () => [...STATE.tents.filter(t => isCloneTent(t)), cloneBag()].flatMap(t => cloneGroups(t = Object.assign(t, { clones: t.clones || [] })));
 openBagMenu = function () {
   const others = Object.keys(CAT_LABELS).filter(c => !["seed", "pollen"].includes(c)).flatMap(c => invOf(c));
   const build = () => [
@@ -10292,7 +10314,7 @@ openBagMenu = function () {
 function sortItem(kind, sorts) { return { label: `Sortieren: ${sorts[bagSort()[kind] % sorts.length][0]}`, id: "_sort", color: "#3868c8" }; }
 function openBudList() {
   const build = () => [sortItem("buds", BUD_SORTS), ...STATE.buds.slice().sort(BUD_SORTS[bagSort().buds % BUD_SORTS.length][1])
-    .map(b => ({ label: STRAINS[b.strain].name + (b.line ? " " + lineName(b.line).replace("Linie ", "L") : "") + " Q" + b.quality, right: fmtG(b.grams), color: RARITIES[b.rarity].color, bud: b }))];
+    .map(b => ({ label: (b.owner === "medical" ? "✚ " : "") + STRAINS[b.strain].name + (b.line ? " " + lineName(b.line).replace("Linie ", "L") : "") + " Q" + b.quality, right: fmtG(b.grams), color: RARITIES[b.rarity].color, bud: b }))];
   openMenu({
     title: "BLÜTEN", items: build(), stay: true, footer: () => `${fmtKg(sumG(STATE.buds))} / ${fmtKg(bagMax())}`,
     onChoose(it) {
@@ -10983,7 +11005,7 @@ function seedStashMove(toStash) {
    Währungen: Bargeld (STATE.money), Bitcoin (Darknet) und jetzt sauberes
    Geld auf dem Konto / Kreditkarte (STATE.bank).
    Mit Karte (sauber) bezahlt man: Immobilien + Grow-Raum-Ausbau,
-   Anbaulizenz (5 Mio.), Gewächshaus (1 Mio.). Verkauf einer Immobilie
+   Anbaulizenz (500.000 €), Gewächshaus (1 Mio.). Verkauf einer Immobilie
    bringt sauberes Geld. Alles andere bleibt Bargeld.
    Beim ersten Gespräch mit dem Makler lacht er über das Bargeld →
    Hauptquest „Wasche dein Geld“ mit 2 Unterquests:
@@ -11389,7 +11411,7 @@ TALKS.toni = () => talkCycle("toni", "Toni", [
      Skalpell), Stecklinge aus dem Stecklingszelt im Raum.
    - Die Ernte (abzüglich Anteil) legen sie in die Erntekiste im Raum.
      Samen aus Bestäubung landen im Samenschrank.
-   Fundorte: Jonas (L1, Wohnung 1.1), Mia (L1, Grünes Haus),
+   Fundorte: Jonas (L1, WG in Wohnung 2.2), Mia (L1, Grünes Haus),
    Kalle (L2, Wolframs Haus), Felix (L3, Cannabis-Labor im College-UG),
    Rosa (L3, Grow Shop Jacksonville).
    ===================================================================== */
@@ -11403,8 +11425,8 @@ const STAFF_LV = [
 const STAFF_DAYS = [0, 3, 7, 14, 30];                 // Erfahrung (Spieltage) für Level 1–5
 const STAFF_SKILLS = { plant: 1, harvest: 1, fert: 3, cut: 4 };
 const STAFF = {
-  jonas: { name: "Jonas", lvl: 1, map: "flat_11",     x: 5,  y: 5, look: { r: "#58c8c0", R: "#3a9a94", h: "#c8a060", H: "#e0c080", p: "#404858", P: "#2c3240" },
-    intro: "Hi! Ich bin Jonas. Ich hab ein paar Pflanzen auf dem Balkon … ehrlich gesagt mehr Theorie als Praxis.\nAber ich lerne schnell! Wenn du jemanden für deinen Grow-Raum suchst – ich wär dabei." },
+  jonas: { name: "Jonas", lvl: 1, map: "flat_22",     x: 3,  y: 7, look: { r: "#58c8c0", R: "#3a9a94", h: "#c8a060", H: "#e0c080", p: "#404858", P: "#2c3240" },
+    intro: "Hi! Ich bin Jonas, Samis Mitbewohner. Ich hab ein paar Pflanzen auf dem Balkon … ehrlich gesagt mehr Theorie als Praxis.\nAber ich lerne schnell! Wenn du jemanden für deinen Grow-Raum suchst – ich wär dabei." },
   mia:   { name: "Mia",   lvl: 1, map: "house_green", x: 6,  y: 5, look: { r: "#9a58b8", R: "#6e3a8a", h: "#a03a20", H: "#c85a38", p: "#3a4a6a", P: "#283450" },
     intro: "Ich bin Mia, die Enkelin von Herrn Krause. Opa hat einen grünen Daumen – und ich auch!\nIch such einen Job. Gießen, Pflanzen, Ernten – das krieg ich hin." },
   kalle: { name: "Kalle", lvl: 2, map: "house_blue1", x: 6,  y: 2, look: { r: "#6a7a3a", R: "#4a5a28", h: "#3a2a20", H: "#5a4430", p: "#505060", P: "#383844" },
@@ -11439,20 +11461,12 @@ function crate(map) { const c = (STATE.crates = STATE.crates || {}); return (c[m
 for (const [id, p] of Object.entries(STAFF)) {
   NPC_LOOKS["staff_" + id] = p.look;
   const home = MAPS[p.map];
-  if (home && id !== "jonas") home.npcs.push({ id: "staff_" + id, x: p.x, y: p.y, dir: "down", look: "staff_" + id, talk: "staff_" + id, condition: () => !(staffSt(id) && staffSt(id).room) });
+  if (home) home.npcs.push({ id: "staff_" + id, x: p.x, y: p.y, dir: "down", look: "staff_" + id, talk: "staff_" + id, condition: () => !(staffSt(id) && staffSt(id).room) });
   for (const g of GROWROOM_MAPS) MAPS[g].npcs.push({ id: "staff_" + id + "_" + g, x: 14, y: 8, dir: "left", look: "staff_" + id, talk: "staff_" + id, condition: () => !!(staffSt(id) && staffSt(id).room === g) });
   TALKS["staff_" + id] = () => talkStaff(id);
 }
-// Wohnung 1.1 (Jonas)
-flatMap("flat_11", "Wohnung 1.1 · Jonas", "lobby_1", "doorLeft", [
-  { type: "bookshelf", x: 1, y: 1 }, { type: "plant", x: 1, y: 2 }, { type: "plant", x: 2, y: 2 }, { type: "plant", x: 3, y: 2 },
-  { type: "sofa", x: 2, y: 6 }, { type: "coffeeTable", x: 4, y: 7 }, { type: "bed", x: 10, y: 6 }, { type: "hangingPlant", x: 6, y: 1 },
-], { id: "staff_jonas", x: STAFF.jonas.x, y: STAFF.jonas.y, dir: "down", look: "staff_jonas", talk: "staff_jonas", condition: () => !(staffSt("jonas") && staffSt("jonas").room) });
-CUSTOM_INTERACTIONS["flat_1.1"] = () => { Sound.select(); openDialog("Du klopfst an Wohnung 1.1.\nJonas: Ist offen, komm rein!", null, () => { Sound.door(); transitionTo("flat_11", "entrance"); }); };
-for (const list of [floors.first.objects, MAPS.lobby_1.objects]) {
-  const i = list.findIndex(o => o.type === "aptDoor" && o.x === 2 && o.y === 10);
-  if (i >= 0) list[i] = { ...list[i], interact: { kind: "flat_1.1", face: "up", hint: "Klopfen (1.1)" } };
-}
+// Jonas wohnt in der WG in Wohnung 2.2 (mit Sami)
+MAPS.flat_22.name = "Wohnung 2.2 · Sami & Jonas";
 
 /* ---------------------------- ERNTEKISTE ---------------------------- */
 OBJECT_TYPES.harvestCrate = { w: 1, h: 1, solid: true, draw(ctx, x, y, o) {
@@ -11647,33 +11661,43 @@ function staffTick() {
 let STAFF_LAST = 0;
 const _updateStaff = update;
 update = function (dt) { _updateStaff(dt); if (Date.now() - STAFF_LAST > 1000) { STAFF_LAST = Date.now(); staffTick(); } };
+MAPS.flat_11 = MAPS.flat_22;      // alte Spielstände, die in „Wohnung 1.1 · Jonas“ standen
 /* =====================================================================
-   46. FERNANDO ALS LÄUFER FÜR DIE STRASSENKUNDEN
+   46. LÄUFER FÜR DIE STRASSENKUNDEN (Fernando, Haze Angels)
    ---------------------------------------------------------------------
-   Statt fester Wartezeit: Man gibt Fernando Blüten (ab 500 g) als Vorrat.
-   Er bedient damit selbstständig alle Straßenkunden, sobald sie bestellen
-   (Wunschsorte, Mindest-Seltenheit, Menge wie beim Spieler). Fehlt die
-   Wunschsorte, bringt er wie der Spieler eine Alternative (−15 %).
-   Er behält 20 % vom Auftragspreis, den Rest + die XP der Aufträge holt man bei ihm ab.
+   Man gibt einem Läufer Blüten als Vorrat. Er bedient damit selbstständig
+   alle Straßenkunden SEINES Gebiets, sobald sie bestellen (Wunschsorte,
+   Mindest-Seltenheit, Menge wie beim Spieler). Fehlt die Wunschsorte,
+   bringt er eine Alternative (−15 %). Er behält 20 % vom Auftragspreis,
+   den Rest + die XP der Aufträge holt man bei ihm ab.
    Ist der Vorrat leer, schreibt er eine SMS.
+   - Fernando: Stadt + Jacksonville, nimmt pro Abgabe 2–5 kg
+   - Haze Angels (Westend, 47.): Westend, nehmen pro Abgabe ab 10 kg (erst nach ihrer Quest)
    ===================================================================== */
-const FERN_MIN_GIVE = 500;
-// Gebiete: jeder Läufer beliefert nur seine Gebiete (später mehr Läufer für größere Karten)
-const AREA_OF_MAP = m => (m === "jacksonville" || m === "growshop2") ? "jacksonville" : (m === "outside" || m === "growshop" || /^lobby_/.test(m)) ? "stadt" : m;
-const RUNNER_AREAS = { fernando: ["stadt", "jacksonville"] };
+// Gebiete: jeder Läufer beliefert nur seine Gebiete
+const AREA_OF_MAP = m => (m === "jacksonville" || m === "growshop2") ? "jacksonville" : (m === "outside" || m === "growshop" || /^lobby_/.test(m)) ? "stadt" : (typeof WESTEND_MAPS !== "undefined" && WESTEND_MAPS.includes(m)) ? "westend" : m;
+const RUNNERS = {
+  fernando: { name: "Fernando", areas: ["stadt", "jacksonville"], min: 2000, max: 5000, active: () => questStep("kaution") >= 7, stock: "fernStock", pay: "fernPay" },
+};
+const RUNNER_AREAS = { fernando: RUNNERS.fernando.areas };
+const FERN_MIN_GIVE = RUNNERS.fernando.min;
 const orderArea = o => { const sp = o.spot === "home" ? homeDoorSpot() : STREET_SPOTS[o.spot]; return sp ? AREA_OF_MAP(sp.map) : null; };
-const fernStock = () => (STATE.fernStock = STATE.fernStock || []);
+const runnerStock = id => (STATE[RUNNERS[id].stock] = STATE[RUNNERS[id].stock] || []);
+const runnerPay = id => (STATE[RUNNERS[id].pay] = STATE[RUNNERS[id].pay] || { money: 0, xp: 0, n: 0 });
+const fernStock = () => runnerStock("fernando");
+const giveRange = R => R.max ? `${fmtKg(R.min)}–${fmtKg(R.max)}` : `ab ${fmtKg(R.min)}`;
 
-function fernServe() {
-  if (!STATE || questStep("kaution") < 7 || typeof STREET_PEOPLE === "undefined") return;
-  const stock = fernStock();
+function runnerServe(id) {
+  const R = RUNNERS[id];
+  if (!STATE || !R.active() || typeof STREET_PEOPLE === "undefined") return;
+  const stock = runnerStock(id);
   if (!stock.length) return;
   let sold = 0;
   for (const p of STREET_PEOPLE) {
     const st = street()[p.id];
     if (!st || !st.met || !st.order) continue;
     const o = st.order;
-    if (!RUNNER_AREAS.fernando.includes(orderArea(o))) continue;      // nicht sein Gebiet
+    if (!R.areas.includes(orderArea(o))) continue;      // nicht sein Gebiet
     let fits = b => (!o.strain || b.strain === o.strain) && (!o.minRarity || b.rarity >= o.minRarity), alt = false;
     if (sumG(stock.filter(fits)) + 1e-9 < o.grams) {
       if (o.strain && sumG(stock) + 1e-9 >= o.grams) { fits = () => true; alt = true; }
@@ -11687,66 +11711,72 @@ function fernServe() {
     }
     const grams = Math.round(parts.reduce((n, b) => n + b.grams, 0) * 10) / 10, value = parts.reduce((n, b) => n + b.value, 0);
     const pay = Math.round(value * o.factor * negoFactor() * (alt ? 1 - STREET_ALT_CUT : 1) * (1 - RUNNER_CUT) * 100) / 100;
-    const fp = (STATE.fernPay = STATE.fernPay || { money: 0, xp: 0, n: 0 });
-    fp.money = Math.round((fp.money + pay) * 100) / 100; fp.xp += orderXP(o); fp.n++;      // abholen bei Fernando
-    streetLog(`✓ ${p.name} (Fernando): ${fmtG(grams)}${alt ? " Alternative" : ""} · ${euro(pay)}`);
+    const fp = runnerPay(id);
+    fp.money = Math.round((fp.money + pay) * 100) / 100; fp.xp += orderXP(o); fp.n++;      // abholen beim Läufer
+    streetLog(`✓ ${p.name} (${R.name}): ${fmtG(grams)}${alt ? " Alternative" : ""} · ${euro(pay)}`);
     st.order = null; st.done++; st.nextAt = nowMin() + streetGap();
     repChange(o.rush ? 2 : 1);
     sold++;
-    if (!GAME.dialog && !GAME.screen) showBanner(`Fernando: ${fmtG(grams)} an ${p.name} verkauft`);
+    if (!GAME.dialog && !GAME.screen) showBanner(`${R.name}: ${fmtG(grams)} an ${p.name} verkauft`);
   }
   if (!sold) return;
   refreshStreetMaps();
   if (sumG(stock) < 0.05) {
-    STATE.fernStock = [];
-    addMessage("Fernando", `Alles weg, Bro! Mein Vorrat ist leer. Komm vorbei, hol dein Geld ab und bring mir Nachschub – ab ${FERN_MIN_GIVE} g.`);
-    smsPing("Fernando");
+    STATE[R.stock] = [];
+    addMessage(R.name, R.emptyText || `Alles weg, Bro! Mein Vorrat ist leer. Komm vorbei, hol dein Geld ab und bring mir Nachschub – ${giveRange(R)}.`);
+    smsPing(R.name);
   }
   saveGame();
 }
-let FERN_LAST = 0;
+const fernServe = () => runnerServe("fernando");
+let RUNNER_LAST = 0;
 const _updateFern = update;
-update = function (dt) { _updateFern(dt); if (Date.now() - FERN_LAST > 2000) { FERN_LAST = Date.now(); fernServe(); } };
+update = function (dt) { _updateFern(dt); if (Date.now() - RUNNER_LAST > 2000) { RUNNER_LAST = Date.now(); for (const id of Object.keys(RUNNERS)) runnerServe(id); } };
 
-/* ---------------------------- GESPRÄCH ---------------------------- */
-TALKS.fernando = () => {
-  if (questStep("kaution") < 7) { openDialog("Fernando: Kümmer dich erst um deinen Bruder."); return; }
-  const ready = runnerJobs().filter(j => Date.now() >= j.readyAt);           // alte Aufträge (vor der Umstellung)
-  const g = sumG(fernStock());
-  const fp = STATE.fernPay || { money: 0, xp: 0, n: 0 };
+/* ---------------------------- GESPRÄCH (für alle Läufer) ---------------------------- */
+function runnerMenu(id, greetEmpty, greetStock, extraItems) {
+  const R = RUNNERS[id], g = sumG(runnerStock(id)), fp = runnerPay(id);
+  const ready = id === "fernando" ? runnerJobs().filter(j => Date.now() >= j.readyAt) : [];   // alte Aufträge (vor der Umstellung)
   const items = [{ label: "Blüten abgeben", id: "give" }];
   if (fp.n) items.unshift({ label: "Geld abholen", right: euro(fp.money), id: "pay" });
   if (g > 0) items.push({ label: "Vorrat ansehen", right: fmtG(Math.round(g * 10) / 10), id: "show" }, { label: "Vorrat zurücknehmen", id: "back" });
-  if (ready.length) items.unshift({ label: "Geld abholen", right: euro(ready.reduce((n, j) => n + j.payout, 0)), id: "collect" });
+  if (ready.length) items.unshift({ label: "Geld abholen (alt)", right: euro(ready.reduce((n, j) => n + j.payout, 0)), id: "collect" });
   items.push({ label: "Tschüss", id: "bye" });
-  openDialog(g > 0 ? `Fernando: Ich hab noch ${fmtG(Math.round(g * 10) / 10)} von dir. Sobald einer deiner Kunden schreibt, bin ich unterwegs.`
-    : `Fernando: Gib mir Ware – ab ${FERN_MIN_GIVE} g. Dann beliefere ich alle deine Straßenkunden, sobald sie bestellen. Ich behalte ${Math.round(RUNNER_CUT * 100)} %, deinen Teil holst du bei mir ab.`, null, () => openMenu({
-    title: "FERNANDO", items,
+  openDialog(g > 0 ? greetStock(g) : greetEmpty, null, () => openMenu({
+    title: R.name.toUpperCase(), items,
     onChoose(it) {
       if (it.id === "collect") {
         const sum = ready.reduce((n, j) => n + j.payout, 0);
         STATE.runner = runnerJobs().filter(j => !ready.includes(j));
         STATE.money += sum; saveGame(); Sound.floor();
-        openDialog(`Fernando: Hier, wie abgemacht. ${euro(sum)}.`);
+        openDialog(`${R.name}: Hier, wie abgemacht. ${euro(sum)}.`);
       } else if (it.id === "pay") {
         STATE.money += fp.money; gainXP(fp.xp); saveGame(); Sound.floor();
-        openDialog(`Fernando: Hier, dein Anteil aus ${fp.n} ${fp.n === 1 ? "Lieferung" : "Lieferungen"}: ${euro(fp.money)}.\nDu bekommst ${fp.xp} XP für die Aufträge.`);
-        STATE.fernPay = { money: 0, xp: 0, n: 0 }; saveGame();
-      } else if (it.id === "give") openRunnerGive();
-      else if (it.id === "show") openMenu({ title: "FERNANDOS VORRAT", items: fernStock().map(b => ({ label: STRAINS[b.strain].name + " Q" + b.quality, right: fmtG(b.grams), color: RARITIES[b.rarity].color })) });
+        openDialog(`${R.name}: Hier, dein Anteil aus ${fp.n} ${fp.n === 1 ? "Lieferung" : "Lieferungen"}: ${euro(fp.money)}.\nDu bekommst ${fp.xp} XP für die Aufträge.`);
+        STATE[R.pay] = { money: 0, xp: 0, n: 0 }; saveGame();
+      } else if (it.id === "give") runnerGive(id);
+      else if (it.id === "show") openMenu({ title: "VORRAT", items: runnerStock(id).map(b => ({ label: STRAINS[b.strain].name + " Q" + b.quality, right: fmtG(b.grams), color: RARITIES[b.rarity].color })) });
       else if (it.id === "back") {
+        const st = runnerStock(id);
         let free = bagFree(), took = 0;
-        for (const b of fernStock().slice()) { if (free <= 0.05) break; const gr = Math.round(Math.min(free, b.grams) * 10) / 10; const part = takeFromList(fernStock(), b, gr); addToList(STATE.buds, part, part.grams); free -= gr; took += gr; }
+        for (const b of st.slice()) { if (free <= 0.05) break; const gr = Math.round(Math.min(free, b.grams) * 10) / 10; const part = takeFromList(st, b, gr); addToList(STATE.buds, part, part.grams); free -= gr; took += gr; }
         saveGame(); Sound.select(); closeAllMenus();
-        openDialog(`Fernando: Okay, hier – ${fmtG(Math.round(took * 10) / 10)} zurück.` + (fernStock().length ? ` Der Rest passt nicht mehr in deine Tasche (${fmtG(Math.round(sumG(fernStock()) * 10) / 10)} bleiben bei mir).` : ""));
-      } else openDialog("Fernando: Bis dann.");
+        openDialog(`${R.name}: Okay, hier – ${fmtG(Math.round(took * 10) / 10)} zurück.` + (st.length ? ` Der Rest passt nicht mehr in deine Tasche (${fmtG(Math.round(sumG(st) * 10) / 10)} bleiben hier).` : ""));
+      } else openDialog(`${R.name}: Bis dann.`);
     },
   }));
+}
+TALKS.fernando = () => {
+  if (questStep("kaution") < 7) { openDialog("Fernando: Kümmer dich erst um deinen Bruder."); return; }
+  runnerMenu("fernando",
+    `Fernando: Gib mir Ware – ${giveRange(RUNNERS.fernando)} auf einmal. Dann beliefere ich alle deine Straßenkunden in der Stadt und in Jacksonville. Ich behalte ${Math.round(RUNNER_CUT * 100)} %, deinen Teil holst du bei mir ab.`,
+    g => `Fernando: Ich hab noch ${fmtG(Math.round(g * 10) / 10)} von dir. Sobald einer deiner Kunden schreibt, bin ich unterwegs.`);
 };
-// Blüten auswählen (A = an/abwählen), dann "Abgeben" – ab 500 g, kommt in Fernandos Vorrat
-openRunnerGive = function () {
+// Blüten auswählen (A = an/abwählen), dann "Abgeben"
+function runnerGive(id) {
+  const R = RUNNERS[id];
   const own = STATE.buds.filter(b => !b.owner);
-  if (!own.length) { openDialog("Fernando: Du hast ja gar nichts dabei."); return; }
+  if (!own.length) { openDialog(`${R.name}: Du hast ja gar nichts dabei.`); return; }
   const picked = new Set();
   const build = () => {
     const g = own.filter(b => picked.has(b.id)).reduce((n, b) => n + b.grams, 0);
@@ -11758,28 +11788,30 @@ openRunnerGive = function () {
   };
   openMenu({
     title: "BLÜTEN ABGEBEN", stay: true, items: build(),
-    footer: () => `Ab ${FERN_MIN_GIVE} g · Fernando behält ${Math.round(RUNNER_CUT * 100)} % pro Verkauf`,
+    footer: () => `${giveRange(R)} · behält ${Math.round(RUNNER_CUT * 100)} % pro Verkauf`,
     onChoose(it) {
       const m = GAME.menus[GAME.menus.length - 1];
       if (it.bud) { picked.has(it.bud.id) ? picked.delete(it.bud.id) : picked.add(it.bud.id); }
       else if (it.id === "all") { const allOn = own.every(b => picked.has(b.id)); own.forEach(b => allOn ? picked.delete(b.id) : picked.add(b.id)); }
       else if (it.id === "go") {
-        if (it.g + 1e-9 < FERN_MIN_GIVE) { Sound.bump(); openDialog(`Fernando: Unter ${FERN_MIN_GIVE} g lohnt sich das nicht für mich. Du hast ${fmtG(it.g)} ausgewählt.`); return; }
-        openDialog(`${fmtG(it.g)} an Fernando abgeben?\nEr beliefert damit alle Straßenkunden, sobald sie bestellen, und behält ${Math.round(RUNNER_CUT * 100)} % vom Preis. Dein Geld holst du bei ihm ab.`, ["Abgeben", "Abbrechen"], c => {
+        if (it.g + 1e-9 < R.min) { Sound.bump(); openDialog(`${R.name}: Unter ${fmtKg(R.min)} lohnt sich das nicht. Du hast ${fmtG(it.g)} ausgewählt.`); return; }
+        if (R.max && it.g > R.max + 1e-9) { Sound.bump(); openDialog(`${R.name}: Mehr als ${fmtKg(R.max)} auf einmal nehm ich nicht. Du hast ${fmtG(it.g)} ausgewählt.`); return; }
+        openDialog(`${fmtG(it.g)} an ${R.name} abgeben?\nDamit werden alle Straßenkunden im Gebiet beliefert, sobald sie bestellen. ${Math.round(RUNNER_CUT * 100)} % gehen ab, dein Geld holst du hier ab.`, ["Abgeben", "Abbrechen"], c => {
           if (c !== 0) return;
-          for (const b of own.filter(b => picked.has(b.id))) addToList(fernStock(), b, b.grams);
+          for (const b of own.filter(b => picked.has(b.id))) addToList(runnerStock(id), b, b.grams);
           STATE.buds = STATE.buds.filter(b => !picked.has(b.id));
           gainXP(Math.max(1, Math.round(it.g / 10)));
           saveGame(); Sound.confirm(); closeAllMenus();
-          openDialog(`Du hast ${fmtG(it.g)} an Fernando abgegeben.\nFernando: Läuft. Ich kümmer mich um deine Kunden. Wenn alles weg ist, schreib ich dir.`);
-          fernServe();
+          openDialog(`Du hast ${fmtG(it.g)} an ${R.name} abgegeben.\n${R.name}: Läuft. Wir kümmern uns um deine Kunden. Wenn alles weg ist, gibt's eine SMS.`);
+          runnerServe(id);
         });
         return;
       }
       m.items = build(); Sound.select();
     },
   });
-};
+}
+openRunnerGive = function () { runnerGive("fernando"); };
 /* =====================================================================
    47. DIE 5 HÄUSER IN JACKSONVILLE
    ---------------------------------------------------------------------
@@ -11903,6 +11935,958 @@ TALKS.wagner = () => talkCycle("wagner", "Frau Wagner", [
   "Zufriedene Kunden bestellen mehr. Aber lass sie nicht warten – wenn ein Auftrag abläuft, redet sich das herum.",
   "Und eine schön eingerichtete Wohnung macht Eindruck. Ein bisschen Deko, und schon halten dich alle für jemanden.",
 ]);
+/* =====================================================================
+   48. QUEST-APP (neu)
+   ---------------------------------------------------------------------
+   Reiter oben: HAUPT · NEBEN · ERLEDIGT (links/rechts wechseln).
+   HAUPT: offene Hauptquests nach Story-Kapiteln, mit Fortschrittsbalken.
+   NEBEN: offene Nebenquests mit Fortschrittsbalken.
+   ERLEDIGT: alle erledigten Quests.
+   A öffnet die Detailseite: alle Schritte (✓ erledigt, ▶ aktuell,
+   … noch offen) + „Wo?“-Hinweis. B = zurück.
+   ===================================================================== */
+const QUEST_CHAPTERS = [
+  { title: "Kapitel 1: Die Kaution", quests: ["kaution"] },
+  { title: "Kapitel 2: Eigener Anbau", quests: ["erstes_setup"] },
+  { title: "Kapitel 3: Das College", quests: ["handwerker", "labor"] },
+  { title: "Kapitel 4: Neue Wege", quests: ["post", "lizenz"] },
+  { title: "Kapitel 5: Sauberes Geld", quests: ["geldwaesche", "wash_cafe", "wash_arcade"] },
+];
+const QUEST_WHERE = {
+  kaution: "Unsere Stadt", erstes_setup: "Growshop (Stadt) und deine Wohnung",
+  stefanie: "Stefanie, Wohnhaus 1. OG links", stefanie2: "Stefanie, Wohnhaus 1. OG links", stefanie_more: "Stefanie, Wohnhaus 1. OG links",
+  marlon: "Marlon, blaues Haus unten rechts (Stadt)", marlon_more: "Marlon, blaues Haus unten rechts (Stadt)",
+  handwerker: "Andi (Wohnung 0.1) → Big College, Jacksonville", labor: "College-Untergeschoss, Labor (Code 0420)",
+  post: "Briefkästen im Wohnhaus (Erdgeschoss)", lizenz: "Dr. Brenner, College-Untergeschoss",
+  geldwaesche: "Jacksonville: Café, Spielhalle oder Viktor", wash_cafe: "Café, Jacksonville (Mitte)", wash_arcade: "Spielhalle, Jacksonville (Mitte)",
+};
+const qLast = q => QUESTS[q].steps.length - 1;
+const qOpen = q => questStep(q) >= 0 && questStep(q) < qLast(q);
+const qDoneQ = q => questStep(q) >= 0 && questStep(q) >= qLast(q);
+const QTABS = ["HAUPT", "NEBEN", "ERLEDIGT"];
+function questRows(tab) {
+  const all = Object.keys(QUESTS).filter(q => questStep(q) >= 0);
+  const rows = [];
+  if (tab === 0) {
+    const inCh = new Set(QUEST_CHAPTERS.flatMap(c => c.quests));
+    const chapters = [...QUEST_CHAPTERS, { title: "Weitere Hauptquests", quests: all.filter(q => MAIN_QUESTS.includes(q) && !inCh.has(q)) }];
+    for (const c of chapters) {
+      const open = c.quests.filter(q => QUESTS[q] && qOpen(q));
+      if (!open.length) continue;
+      rows.push({ head: c.title });
+      for (const q of open) rows.push({ q });
+    }
+    if (!rows.length) rows.push({ empty: "Gerade keine offene Hauptquest." });
+  } else if (tab === 1) {
+    for (const q of all.filter(q => !MAIN_QUESTS.includes(q) && qOpen(q))) rows.push({ q });
+    if (!rows.length) rows.push({ empty: "Gerade keine offenen Nebenquests." });
+  } else {
+    for (const c of QUEST_CHAPTERS) {
+      const done = c.quests.filter(q => QUESTS[q] && qDoneQ(q));
+      if (!done.length) continue;
+      rows.push({ head: c.title });
+      for (const q of done) rows.push({ q });
+    }
+    const other = all.filter(q => qDoneQ(q) && !QUEST_CHAPTERS.some(c => c.quests.includes(q)));
+    if (other.length) { rows.push({ head: "Nebenquests" }); for (const q of other) rows.push({ q }); }
+    if (!rows.length) rows.push({ empty: "Noch nichts erledigt." });
+  }
+  return rows;
+}
+const _updatePhoneQA = updatePhone;
+updatePhone = function () {
+  const sc = GAME.screen;
+  if (!sc || sc.view !== "quests") return _updatePhoneQA();
+  if (sc.qtab === undefined) { sc.qtab = 0; sc.qsel = 0; }
+  if (sc.qdetail) {
+    if (Input.consume("up")) sc.qscroll = Math.max(0, (sc.qscroll || 0) - 1);
+    if (Input.consume("down")) sc.qscroll = (sc.qscroll || 0) + 1;
+    if (Input.consume("b") || Input.consume("a")) { sc.qdetail = null; Sound.cancel(); }
+    if (Input.consume("start")) GAME.screen = null;
+    return;
+  }
+  const rows = questRows(sc.qtab), sel = rows.map((r, i) => r.q ? i : -1).filter(i => i >= 0);
+  if (Input.consume("left")) { sc.qtab = (sc.qtab + 2) % 3; sc.qsel = 0; Sound.select(); }
+  if (Input.consume("right")) { sc.qtab = (sc.qtab + 1) % 3; sc.qsel = 0; Sound.select(); }
+  if (sel.length) {
+    if (Input.consume("up")) { sc.qsel = (sc.qsel + sel.length - 1) % sel.length; Sound.select(); }
+    if (Input.consume("down")) { sc.qsel = (sc.qsel + 1) % sel.length; Sound.select(); }
+    if (Input.consume("a")) { sc.qdetail = rows[sel[Math.min(sc.qsel, sel.length - 1)]].q; sc.qscroll = 0; Sound.confirm(); }
+  } else { Input.consume("up"); Input.consume("down"); Input.consume("a"); }
+  if (Input.consume("b")) { sc.view = "home"; sc.qtab = undefined; Sound.cancel(); }
+  if (Input.consume("start")) GAME.screen = null;
+};
+const _renderPhoneQA = renderPhone;
+renderPhone = function () {
+  const sc = GAME.screen;
+  if (sc.view !== "quests") return _renderPhoneQA();
+  const saved = sc.view; sc.view = "_blank"; _renderPhoneBase(); sc.view = saved;
+  const { sx, sy, sw, sh } = PHONE_SCREEN;
+  if (sc.qtab === undefined) { sc.qtab = 0; sc.qsel = 0; }
+  if (sc.qdetail) return renderQuestDetail(sc.qdetail);
+  // Reiter
+  const tws = QTABS.map(t => textWidth(t) + 6), gap = Math.max(1, Math.floor((sw - 8 - tws.reduce((a, b) => a + b, 0)) / 2));
+  let tx = sx + 4;
+  QTABS.forEach((t, i) => {
+    const on = i === sc.qtab;
+    px(ctx, on ? "#2f7a45" : "#c8d0d0", tx, sy + 14, tws[i], 12);
+    drawText(ctx, t, tx + 3, sy + 16, on ? C.white : "#505060", null);
+    tx += tws[i] + gap;
+  });
+  const rows = questRows(sc.qtab), sel = rows.map((r, i) => r.q ? i : -1).filter(i => i >= 0);
+  sc.qsel = Math.min(sc.qsel || 0, Math.max(0, sel.length - 1));
+  const selRow = sel[sc.qsel];
+  const hOf = r => r.head ? 12 : r.q ? (sc.qtab === 2 ? 12 : 21) : 12;
+  const top = sy + 30, maxH = sh - 30 - 16;
+  const yOf = k => rows.slice(0, k).reduce((n, r) => n + hOf(r), 0);
+  let off = sc.qoff || 0;
+  if (selRow !== undefined) {
+    const y0 = yOf(selRow) - (selRow > 0 && rows[selRow - 1].head ? 12 : 0);
+    if (y0 - off < 0) off = y0;
+    if (yOf(selRow) + hOf(rows[selRow]) - off > maxH) off = yOf(selRow) + hOf(rows[selRow]) - maxH;
+  }
+  sc.qoff = off = Math.max(0, off);
+  ctx.save(); ctx.beginPath(); ctx.rect(sx, top, sw, maxH); ctx.clip();
+  rows.forEach((r, k) => {
+    const y = top + yOf(k) - off;
+    if (r.empty) { drawText(ctx, r.empty, sx + 6, y + 2, "#909098", null); return; }
+    if (r.head) { let h = r.head.toUpperCase(); while (textWidth(h) > sw - 10 && h.length > 4) h = h.slice(0, -2) + "…"; drawText(ctx, h, sx + 6, y + 2, "#2f7a45", null); return; }
+    const q = r.q, on = k === selRow, done = qDoneQ(q);
+    if (on) { px(ctx, "#2f7a45", sx + 3, y, sw - 6, hOf(r) - 1); px(ctx, "#d8f0d8", sx + 4, y + 1, sw - 8, hOf(r) - 3); }
+    let title = (done ? "✓ " : "● ") + QUESTS[q].title;
+    while (textWidth(title) > sw - 16 && title.length > 4) title = title.slice(0, -2) + "…";
+    drawText(ctx, title, sx + 7, y + 2, done ? "#3a9a50" : C.red, null);
+    if (!done) {
+      const tot = qLast(q), st = Math.min(questStep(q), tot), bw = sw - 46;
+      px(ctx, "#c8c8d0", sx + 9, y + 13, bw, 3); px(ctx, "#40b060", sx + 9, y + 13, Math.round(bw * st / tot), 3);
+      drawText(ctx, `${st}/${tot}`, sx + 13 + bw, y + 11, "#707080", null);
+    }
+  });
+  ctx.restore();
+  drawText(ctx, sel.length ? "◀▶ Reiter · A: Details" : "◀▶ Reiter · B: Zurück", sx + 6, sy + sh - 14, "#707080", null);
+};
+function renderQuestDetail(q) {
+  const sc = GAME.screen, { sx, sy, sw, sh } = PHONE_SCREEN;
+  const st = questStep(q), last = qLast(q), done = st >= last, steps = QUESTS[q].steps;
+  const lines = [];
+  for (const l of wrapText(QUESTS[q].title, sw - 12)) lines.push([l, "#2f7a45"]);
+  lines.push(["", C.uiText]);
+  for (let i = 0; i < last; i++) {
+    const mark = i < st || done ? "✓ " : i === st ? "▶ " : "… ";
+    const col = i < st || done ? "#3a9a50" : i === st ? C.red : "#a0a0a8";
+    const text = i <= st || done ? steps[i] : "noch geheim";
+    wrapText(mark + text, sw - 26).forEach((l, j) => lines.push([j ? "   " + l : l, col]));
+  }
+  if (done) { lines.push(["", C.uiText]); for (const l of wrapText(steps[last], sw - 12)) lines.push([l, "#3a9a50"]); }
+  if (!done && QUEST_WHERE[q]) { lines.push(["", C.uiText]); for (const l of wrapText("Wo: " + QUEST_WHERE[q], sw - 12)) lines.push([l, "#3868c8"]); }
+  const maxL = Math.floor((sh - 34) / 11);
+  sc.qscroll = Math.min(sc.qscroll || 0, Math.max(0, lines.length - maxL));
+  lines.slice(sc.qscroll, sc.qscroll + maxL).forEach(([l, c], i) => drawText(ctx, l, sx + 6, sy + 16 + i * 11, c, null));
+  if (sc.qscroll + maxL < lines.length) drawText(ctx, "↓", sx + sw - 10, sy + sh - 24, "#707080", null);
+  drawText(ctx, "B: Zurück", sx + 6, sy + sh - 14, "#707080", null);
+}
+// Stern für „★Cup“ (Cup-Winner-Linien)
+FONT["★"] = FONT["★"] || { w: 5, rows: "..#..|..#..|#####|.###.|.#.#.|#...#|.....".split("|") };
+FONT["é"] = FONT["é"] || { w: 5, rows: "...#.|..#..|.###.|#...#|#####|#....|.###.".split("|") };
+FONT["à"] = FONT["à"] || { w: 5, rows: ".#...|..#..|.###.|....#|.####|#...#|.####".split("|") };
+/* =====================================================================
+   49. GEWÄCHSHAUS (Jacksonville) + STECKLINGE IN DER TASCHE
+   ---------------------------------------------------------------------
+   - Anbaulizenz bei Dr. Brenner jetzt 500.000 € (sauber).
+   - Gewächshaus (1 Mio., Karte, nur mit Lizenz): beim Kauf sofort fertig
+     eingerichtet – 8 Reihen à 10 Plätze (Profi-LED, Auto-Bewässerung,
+     Lüfter), festes Stecklingszelt, Samenschrank (Material), Erntekiste,
+     Platz für einen Anbauer. Zählt nicht zur Wohnungs-Grenze.
+   - Dort wird NUR mit Stecklingen gearbeitet (keine Samen).
+   - Alle Blüten aus dem Gewächshaus sind sofort getestet (+5 %, Werte
+     sichtbar; die Linie gilt als getestet) und als Gewächshaus-Ware
+     markiert (für Dr. Brenner / Apotheken später).
+   - Stecklinge kann man im Stecklingszelt „Mitnehmen“ (Tasche, höchstens 5) und in
+     jedes Stecklingszelt einsetzen oder direkt einpflanzen.
+   ===================================================================== */
+const GH = "greenhouse_in";
+const GH_TILES = [
+  "TTTTTTTTTTTTTTTT",  // 0
+  "TFFFFFFFFFFFFFFT",  // 1
+  "TFFFFFFFFFFFFFFT",  // 2
+  ...Array.from({ length: 16 }, () => "TZPPPPPPPPPPZZZT"),   // 3–18
+  "TZZZZZZZZZZZZZZT",  // 19
+  "TTTTTTTeeTTTTTTT",  // 20
+];
+// Spalte 2–11 = Reihen, Spalte 12 = Laufweg
+GH_TILES.forEach((r, y) => { if (y >= 3 && y <= 18) GH_TILES[y] = "TZ" + "P".repeat(10) + "ZZZT"; });
+MAPS[GH] = {
+  name: "Gewächshaus", tileset: "indoor", bg: C.black,
+  tiles: GH_TILES, collision: GH_TILES.map(r => [...r].map(c => "TFX".includes(c) ? "#" : ".").join("")),
+  spawns: { entrance: { x: 7, y: 19, dir: "up" } },
+  get objects() {
+    return [
+      ...GROW_TECH.filter(o => o.type !== "hallWindow"),
+      { type: "hallWindow", x: 3, y: 1 }, { type: "hallWindow", x: 7, y: 1 },
+      { type: "sign", x: 14, y: 18, interact: { kind: "dialog", hint: "Lesen", text: "GEWÄCHSHAUS – Lizenzierter Anbau.\nHier wird nur mit Stecklingen gearbeitet. Alle Blüten werden direkt getestet." } },
+      { type: "trigger", x: 7, y: 20, w: 2, h: 1, interact: { kind: "warp", to: "jacksonville", spawn: "fromGreenhouse", trigger: "touch", sound: "door" } },
+    ];
+  },
+  npcs: [],
+};
+MAPS[GH].arrange = homeArrange(GH);
+Object.assign(PROPERTIES.greenhouse, { noLimit: true,
+  maps: [GH], entrance: [GH, "entrance"], growrooms: [{ map: GH, label: "Halle (1.200 qm)" }],
+  info: "Riesige Anbaufläche unter Glas: 8 Reihen à 10 Plätze, Profi-LED, Bewässerung, Lüftung, Stecklingszelt. Nur Stecklinge. Kaufen nur mit legaler Anbaugenehmigung.",
+});
+GROWROOM_MAPS.push(GH);
+for (const id of Object.keys(STAFF))
+  MAPS[GH].npcs.push({ id: "staff_" + id + "_" + GH, x: 14, y: 8, dir: "left", look: "staff_" + id, talk: "staff_" + id, condition: () => !!(staffSt(id) && staffSt(id).room === GH) });
+// Eingang in Jacksonville
+{
+  const i = MAPS.jacksonville.objects.findIndex(o => o.type === "trigger" && o.x === 11 && o.y === 15);
+  if (i >= 0) MAPS.jacksonville.objects[i] = { type: "trigger", x: 11, y: 15, w: 2, h: 1, interact: { kind: "ghDoor", face: "up", hint: "Gewächshaus" } };
+  MAPS.jacksonville.spawns.fromGreenhouse = { x: 11, y: 16, dir: "down" };
+}
+CUSTOM_INTERACTIONS.ghDoor = () => {
+  if (owns("greenhouse")) { Sound.door(); transitionTo(GH, "entrance"); return; }
+  Sound.select();
+  openDialog(flag("anbaugenehmigung") ? "Das Gewächshaus ist verschlossen.\nMit deiner Anbaulizenz kannst du es beim Makler kaufen (Immobilien-Büro)." : "Das Gewächshaus ist verschlossen.\nEin Schild: „Nur für lizenzierte Produzenten.“");
+};
+// Beim Kauf sofort einrichten: 8 Reihen à 10
+function buildGreenhouse() {
+  props().built[GH] = true;
+  for (let i = 0; i < 8; i++) STATE.tents.push({
+    id: STATE.nextTentId++, item: "install_row", install: true, home: GH, row: i, x: GROW_ROW_X, y: 3 + i * 2,
+    title: `Gewächshaus · Reihe ${i + 1}`, addons: { lamp: "lamp_pro", water: "auto_water", fan: "fan" }, plants: new Array(10).fill(null),
+  });
+  ensureGrowroomExtras(GH);
+  saveGame();
+}
+const _updateGH = update;
+update = function (dt) {
+  _updateGH(dt);
+  if (STATE && owns("greenhouse") && !isBuilt(GH)) { buildGreenhouse(); for (const k in MAP_CACHE) delete MAP_CACHE[k]; }
+};
+
+/* ---------------------------- NUR STECKLINGE ---------------------------- */
+const _openSlotActionsGH = openSlotActions;
+openSlotActions = function (slot) {
+  const tent = GAME.screen && GAME.screen.tent;
+  if (tent && tent.home === GH && !tent.plants[slot]) {
+    const any = [...cloneTentsHere(), cloneBag()].some(t => t.clones && t.clones.length);
+    if (!any) { openDialog("Im Gewächshaus wird nur mit Stecklingen gearbeitet.\nBring Stecklinge in der Tasche mit oder setz sie ins Stecklingszelt hier."); return; }
+    chooseClone(tent, slot);
+    return;
+  }
+  _openSlotActionsGH(slot);
+};
+// Anbauer im Gewächshaus: keine Samen
+const _staffStepGH = staffStep;
+staffStep = function (id) {
+  const s = staffSt(id);
+  if (s && s.room === GH && s.src && ITEMS[s.src]) s.src = "auto";
+  if (s && s.room === GH) {
+    const keep = STATE.seedStash, seeds = {};
+    for (const [k, v] of Object.entries(keep || {})) if (ITEMS[k] && ITEMS[k].cat === "seed") seeds[k] = v;
+    for (const k of Object.keys(seeds)) delete keep[k];                // Samen kurz ausblenden
+    try { return _staffStepGH(id); } finally { STATE.seedStash = { ...(STATE.seedStash || {}), ...seeds }; }
+  }
+  return _staffStepGH(id);
+};
+
+/* ---------------------------- GEWÄCHSHAUS-BLÜTEN: IMMER GETESTET + MEDICAL ---------------------------- */
+// wird in harvestBud (09) aufgerufen, bevor die Blüte in Tasche/Schrank landet
+function greenhouseBud(pl, b) {
+  if (pl.line) { const l = lineOf(pl.line); if (l && !l.tested) { l.tested = true; (STATE.testedStrains = STATE.testedStrains || {})[pl.strain] = true; } }
+  b.gh = true;
+  if (!b.tested) { b.tested = true; b.value = Math.round(b.value * TESTED_BONUS * 100) / 100; }
+  b.owner = "medical"; b.value = Math.round(b.value * MEDICAL_FACTOR * 100) / 100;     // Medical: −50 %, nur Brenner/Apotheken
+}
+
+/* ---------------------------- STECKLINGE IN DER TASCHE ---------------------------- */
+function cloneBag() { const b = (STATE.cloneBag = STATE.cloneBag || { clones: [] }); b.bag = true; b.item = "tent_clone"; b.plants = b.plants || []; return b; }
+const CLONE_CARRY = 5;                                  // höchstens 5 Stecklinge in der Tasche
+function cloneTakeMenu(tent, group) {
+  const space = CLONE_CARRY - cloneBag().clones.length;
+  if (space < 1) { openDialog(`Du kannst höchstens ${CLONE_CARRY} Stecklinge tragen. Setz erst welche ein.`); return; }
+  const n = Math.min(group.idx.length, space);
+  const opts = [1, 5, 10, n].filter((v, i, a) => v <= n && a.indexOf(v) === i);
+  openMenu({
+    title: "MITNEHMEN", footer: () => `Tasche: ${cloneBag().clones.length}/${CLONE_CARRY} Stecklinge`, items: opts.map(v => ({ label: v === n ? (n === group.idx.length ? `Alle (${n})` : `${n} (Tasche voll)`) : `${v}`, v })),
+    onChoose(it) {
+      const take = group.idx.slice(0, it.v).map(i => tent.clones[i]);
+      tent.clones = tent.clones.filter(c => !take.includes(c));
+      cloneBag().clones.push(...take);
+      saveGame(); closeAllMenus(); Sound.select();
+      openDialog(`Du hast ${it.v} ${it.v === 1 ? "Steckling" : "Stecklinge"} ${cloneLabel(group)} in die Tasche gepackt.\nEinsetzen: in jedem Stecklingszelt „Aus der Tasche einsetzen“ – oder direkt auf einen freien Platz pflanzen.`);
+    },
+  });
+}
+// Stecklingszelt: „Aus der Tasche einsetzen“
+const _openTentGH = openTent;
+openTent = function (tent) {
+  _openTentGH(tent);
+  if (!isCloneTent(tent) || tent.bag) return;
+  const bag = cloneBag();
+  const m = GAME.menus[GAME.menus.length - 1];
+  if (!m || !bag.clones.length) return;
+  m.items = [{ label: "Aus der Tasche einsetzen", right: "×" + bag.clones.length, id: "_fromBag", color: "#3868c8" }, ...m.items];
+  const orig = m.onChoose;
+  m.onChoose = (it, idx) => {
+    if (it.id !== "_fromBag") return orig(it, idx);
+    const groups = cloneGroups(bag);
+    openMenu({
+      title: "AUS DER TASCHE", items: [...(groups.length > 1 ? [{ label: "Alle einsetzen", all: true, color: "#3868c8" }] : []), ...groups.map(g => ({ label: cloneLabel(g), right: "×" + g.idx.length, g }))],
+      onChoose(x) {
+        const pick = x.all ? bag.clones.slice() : x.g.idx.map(i => bag.clones[i]);
+        const n = Math.min(pick.length, cloneFree(tent));
+        if (n < 1) { openDialog("Das Stecklingszelt ist voll."); return; }
+        const put = pick.slice(0, n);
+        bag.clones = bag.clones.filter(c => !put.includes(c));
+        tent.clones.push(...put);
+        saveGame(); closeAllMenus(); Sound.select();
+        openDialog(`Du hast ${n} ${n === 1 ? "Steckling" : "Stecklinge"} eingesetzt.` + (n < pick.length ? `\nKein Platz mehr – ${pick.length - n} bleiben in der Tasche.` : ""));
+      },
+    });
+  };
+};
+
+/* ---------------------------- MEDICAL & DR. BRENNER ----------------------------
+   Medical-Blüten (Gewächshaus): immer 50 % weniger wert, dafür direkt sauberes
+   Geld. Verkauf nur an Dr. Brenner (später auch Apotheken) – Straße, Fernando,
+   Stefanie, Marlon, Darknet und Cups nehmen sie nicht (intern owner „medical“).
+   Dr. Brenner kauft jede Sorte nur EINMAL, immer genau 5 kg auf einmal.
+   Stecklinge aus dem Gewächshaus im normalen Zelt = wieder normale Blüten. */
+const MEDICAL_FACTOR = 0.5, BRENNER_KG = 5000;
+const medicalStacks = () => {
+  const g = {};
+  for (const b of STATE.buds) if (b.owner === "medical") (g[b.strain] = g[b.strain] || { strain: b.strain, grams: 0, value: 0 }), g[b.strain].grams += b.grams, g[b.strain].value += b.value;
+  return Object.values(g);
+};
+const brennerBought = () => (STATE.brennerBought = STATE.brennerBought || []);
+const _talkBrennerMED = TALKS.brenner;
+TALKS.brenner = () => {
+  if (!flag("anbaugenehmigung")) { _talkBrennerMED(); return; }
+  const list = medicalStacks();
+  const items = list.map(e => {
+    const done = brennerBought().includes(e.strain), enough = e.grams + 1e-9 >= BRENNER_KG;
+    return { label: STRAINS[e.strain].name, right: done ? "gekauft" : fmtG(Math.round(e.grams * 10) / 10), e, disabled: done || !enough, color: RARITIES[STRAINS[e.strain].rarity].color };
+  });
+  openDialog("Dr. Brenner: Ah, unser Produzent! Für meine Forschung kaufe ich von jeder Sorte einmal genau 5 kg Medical-Ware aus Ihrem Gewächshaus.\nDr. Brenner: Bezahlt wird ordentlich per Überweisung – sauberes Geld.",
+    items.length ? ["Medical-Blüten anbieten", "Tschüss"] : ["Tschüss"], c => {
+      if (!items.length || c !== 0) { if (!items.length) openDialog("Dr. Brenner: Sie haben keine Medical-Blüten dabei. Die bekommen Sie nur aus dem Gewächshaus."); return; }
+      openMenu({
+        title: "MEDICAL · 5 KG JE SORTE", items, footer: () => `Schon gekauft: ${brennerBought().length} Sorten`,
+        onChoose(it) {
+          const e = it.e, take = [];
+          let left = BRENNER_KG;
+          for (const b of STATE.buds.filter(b => b.owner === "medical" && b.strain === e.strain).sort((a, b) => b.quality - a.quality)) {
+            if (left <= 0.05) break;
+            const g = Math.round(Math.min(left, b.grams) * 10) / 10;
+            take.push({ b, g }); left = Math.round((left - g) * 10) / 10;
+          }
+          const pay = Math.round(take.reduce((n, x) => n + x.b.value / x.b.grams * x.g, 0) * 100) / 100;
+          openDialog(`5 kg ${STRAINS[e.strain].name} (Medical) an Dr. Brenner verkaufen?\nEr überweist ${euro(pay)} – sauber aufs Konto. Diese Sorte kauft er danach nicht mehr.`, ["Verkaufen", "Abbrechen"], c2 => {
+            if (c2 !== 0) return;
+            for (const x of take) takeFromList(STATE.buds, x.b, x.g);
+            bankAdd(pay); brennerBought().push(e.strain); gainXP(200);
+            saveGame(); closeAllMenus(); Sound.floor();
+            openDialog(`Dr. Brenner: Ausgezeichnet. ${euro(pay)} sind überwiesen.\nKontostand: ${euro(bank())}.`);
+          });
+        },
+      });
+    });
+};
+/* =====================================================================
+   50. WESTEND – neue Stadt westlich von Jacksonville
+   ---------------------------------------------------------------------
+   Nach der Referenz des Nutzers (Bild nur als Vorlage): oben 2 luxuriöse
+   Hochhäuser, Apotheke, Döner, Business Center, Bar der Rocker-Bande
+   „Haze Angels“; unten Skate Shop, Grow Shop (Stecklinge & Samen),
+   Geldautomat, kleiner Park. Erreichbar über den Ausgang West von
+   Jacksonville.
+   - Apotheke: kauft Medical-Blüten – pro Spieltag 5 Sorten à 500 g,
+     zum Medical-Wert, sauber aufs Konto
+   - Grow Shop: Samen Tier 2 (1.500 €) / Tier 3 (5.000 €), feminisiert;
+     Stecklinge 5er-Pack (bewurzelt): T1 2.000 / T2 6.000 / T3 15.000 €
+   - Geldautomat: Abheben (Konto → Bar) bis 10.000 €/Spieltag,
+     Einzahlen (Bar → Konto) bis 2.000 €/Spieltag
+   - Haze Angels: Quest „15 kg Episches besorgen“, danach Läufer für
+     Westend (ab 10 kg pro Abgabe, 20 %)
+   - 6 neue Straßenkunden in Westend
+   ===================================================================== */
+const WESTEND_MAPS = ["westend", "westend_apotheke", "westend_grow", "westend_bar"];
+const WE_PHARMA_STRAINS = 5, WE_PHARMA_G = 500;
+const WE_ATM_OUT = 10000, WE_ATM_IN = 2000;
+const ANGELS_EPIC_G = 15000;
+
+/* ---------------------------- GEBÄUDE (Pixel) ---------------------------- */
+function towerWindows(ctx, x, y, w, h, col, lit, seed) {
+  for (let r = 0; r < Math.floor(h / 10); r++) for (let c = 0; c < Math.floor(w / 9); c++) {
+    const on = (hash(c + seed, r) % 5) < 2;
+    px(ctx, C.ink, x + c * 9, y + r * 10, 8, 8); px(ctx, on ? lit : col, x + c * 9 + 1, y + r * 10 + 1, 6, 6);
+    if (!on) px(ctx, C.glassLt, x + c * 9 + 1, y + r * 10 + 1, 2, 2);
+  }
+}
+OBJECT_TYPES.highrise = { w: 5, h: 11, solid: true, draw(ctx, x, y, o) {
+  const B = "#3a4a6a", BL = "#56688c", W = 80, H = 176;
+  px(ctx, C.ink, x, y + 12, W, H - 12); px(ctx, B, x + 1, y + 13, W - 2, H - 13); px(ctx, BL, x + 1, y + 13, W - 2, 2);
+  if (o.heli) { pixelCircle(ctx, x + 40, y + 10, 12, "#50586a", C.ink); pixelCircle(ctx, x + 40, y + 10, 9, "#2e7a68"); drawText(ctx, "H", x + 37, y + 6, C.white, null); }
+  else { px(ctx, C.ink, x + 20, y + 2, 40, 12); px(ctx, "#6a7898", x + 21, y + 3, 38, 10); }
+  towerWindows(ctx, x + 6, y + 20, W - 12, 100, "#2a3a58", "#f0d878", x);
+  signBoard(ctx, x + 4, y + 124, W - 8, "RESIDENCES", "#284a98", "#1a3070");
+  glassDoor(ctx, x + 28, y + 146, 24, 30, "#c8a048");
+  px(ctx, "#7a8098", x + 1, y + H - 3, W - 2, 2);
+} };
+OBJECT_TYPES.bizCenter = { w: 7, h: 11, solid: true, draw(ctx, x, y) {
+  const B = "#2a5a98", BL = "#4a7ac0", W = 112, H = 176;
+  px(ctx, C.ink, x, y + 8, W, H - 8); px(ctx, B, x + 1, y + 9, W - 2, H - 9); px(ctx, BL, x + 1, y + 9, W - 2, 2);
+  px(ctx, C.ink, x + 30, y, 52, 10); px(ctx, "#5a6a88", x + 31, y + 1, 50, 8);
+  for (let c = 0; c < 12; c++) { px(ctx, "#86b4e8", x + 6 + c * 9, y + 16, 6, 104); px(ctx, "#b8d8f8", x + 6 + c * 9, y + 16, 2, 104); }
+  for (let r = 0; r < 8; r++) px(ctx, "#1a3a68", x + 4, y + 26 + r * 12, W - 8, 1);
+  signBoard(ctx, x + 10, y + 124, W - 20, "BUSINESS CENTER", "#1a3070", "#101c48");
+  glassDoor(ctx, x + 40, y + 144, 32, 32, "#5a6a88");
+  px(ctx, "#7a8098", x + 1, y + H - 3, W - 2, 2);
+} };
+OBJECT_TYPES.pharmacy = { w: 5, h: 7, solid: true, draw(ctx, x, y) {
+  const W = 80, H = 112, G = "#2e8a50";
+  px(ctx, C.ink, x, y, W, H); px(ctx, "#e8ecea", x + 1, y + 1, W - 2, H - 1); px(ctx, "#c8d0cc", x + 1, y + 1, W - 2, 4);
+  // grünes Kreuz
+  px(ctx, C.ink, x + 31, y + 8, 18, 30); px(ctx, C.ink, x + 25, y + 14, 30, 18);
+  px(ctx, G, x + 32, y + 9, 16, 28); px(ctx, G, x + 26, y + 15, 28, 16); px(ctx, "#6ad890", x + 33, y + 10, 4, 10);
+  signBoard(ctx, x + 6, y + 44, W - 12, "APOTHEKE", G, "#1a5a30");
+  for (const wx of [6, 52]) { px(ctx, C.ink, x + wx, y + 66, 22, 26); px(ctx, C.glass, x + wx + 1, y + 67, 20, 24); px(ctx, C.glassLt, x + wx + 2, y + 68, 3, 8); }
+  glassDoor(ctx, x + 30, y + 80, 20, 32, G);
+} };
+OBJECT_TYPES.doener = { w: 4, h: 6, solid: true, draw(ctx, x, y) {
+  const W = 64, H = 96, R = "#b02828";
+  px(ctx, C.ink, x, y, W, H); px(ctx, "#d8c8a8", x + 1, y + 1, W - 2, H - 1);
+  px(ctx, C.ink, x + 4, y + 8, W - 8, 18); px(ctx, R, x + 5, y + 9, W - 10, 16);
+  drawText(ctx, "DÖNER", x + 32 - Math.round(textWidth("DÖNER") / 2), y + 13, C.white, "#701818");
+  // Markise
+  for (let i = 0; i < 8; i++) px(ctx, i % 2 ? C.white : R, x + 2 + i * 7.5, y + 32, 8, 10);
+  px(ctx, C.ink, x + 2, y + 42, W - 4, 1);
+  // Spieß im Fenster
+  px(ctx, C.ink, x + 6, y + 48, 24, 30); px(ctx, "#f0d8a0", x + 7, y + 49, 22, 28);
+  px(ctx, "#8a4a20", x + 14, y + 52, 8, 22); px(ctx, "#b06a30", x + 15, y + 53, 3, 20); px(ctx, C.ink, x + 17, y + 50, 2, 26);
+  glassDoor(ctx, x + 36, y + 64, 22, 32, "#7a4a28");
+} };
+OBJECT_TYPES.bikerBar = { w: 8, h: 7, solid: true, draw(ctx, x, y, o, t) {
+  const W = 128, H = 112, D = "#2a1e1a", DL = "#4a3428", RED = "#e02828";
+  px(ctx, C.ink, x, y, W, H); px(ctx, D, x + 1, y + 1, W - 2, H - 1);
+  for (let j = y + 6; j < y + H; j += 6) px(ctx, "#3a2a22", x + 1, j, W - 2, 1);
+  // Neon-Schild
+  const glow = 0.25 + 0.15 * Math.sin(t * 4);
+  ctx.globalAlpha = glow; px(ctx, RED, x + 10, y + 6, W - 20, 40); ctx.globalAlpha = 1;
+  px(ctx, C.ink, x + 14, y + 10, W - 28, 32); px(ctx, "#140808", x + 15, y + 11, W - 30, 30); px(ctx, RED, x + 15, y + 11, W - 30, 1); px(ctx, RED, x + 15, y + 40, W - 30, 1);
+  drawText(ctx, "HAZE ANGELS", x + 64 - Math.round(textWidth("HAZE ANGELS") / 2), y + 16, RED, "#500808");
+  drawText(ctx, "MC · BAR", x + 64 - Math.round(textWidth("MC · BAR") / 2), y + 28, "#f0d048", "#500808");
+  // Flügel-Emblem (eigen)
+  for (const s of [-1, 1]) for (let i = 0; i < 4; i++) px(ctx, "#d8d8e0", x + 64 + s * (6 + i * 4) - (s < 0 ? 4 : 0), y + 52 + i * 2, 4, 6 - i);
+  pixelCircle(ctx, x + 64, y + 56, 5, RED, C.ink);
+  // Fenster + Tür
+  for (const wx of [8, 92]) { px(ctx, C.ink, x + wx, y + 68, 28, 22); px(ctx, "#f0a040", x + wx + 1, y + 69, 26, 20); px(ctx, C.ink, x + wx + 13, y + 69, 2, 20); }
+  px(ctx, C.ink, x + 52, y + 74, 24, 38); px(ctx, DL, x + 53, y + 75, 22, 37); px(ctx, C.ink, x + 63, y + 75, 2, 37); px(ctx, "#f0d048", x + 60, y + 92, 2, 3); px(ctx, "#f0d048", x + 66, y + 92, 2, 3);
+} };
+OBJECT_TYPES.motorbike = { w: 2, h: 1, solid: true, draw(ctx, x, y, o) {
+  const col = o.color || "#c82828";
+  pixelCircle(ctx, x + 6, y + 11, 4, "#202020", C.ink); pixelCircle(ctx, x + 25, y + 11, 4, "#202020", C.ink);
+  px(ctx, C.ink, x + 6, y + 4, 20, 6); px(ctx, col, x + 7, y + 5, 18, 4); px(ctx, "#c0c0c8", x + 10, y + 9, 10, 2);
+  px(ctx, C.ink, x + 24, y, 2, 6); px(ctx, "#c0c0c8", x + 22, y, 6, 1); px(ctx, "#202020", x + 8, y + 2, 8, 3);
+} };
+OBJECT_TYPES.skateShop = { w: 6, h: 7, solid: true, draw(ctx, x, y) {
+  const W = 96, H = 112, B = "#1a3a78";
+  px(ctx, C.ink, x, y, W, H); px(ctx, "#5a6070", x + 1, y + 1, W - 2, H - 1);
+  for (let j = y + 6; j < y + 40; j += 5) px(ctx, "#4a5060", x + 1, j, W - 2, 1);
+  signBoard(ctx, x + 10, y + 14, W - 20, "SKATE SHOP", B, "#0e2048");
+  // Skateboard
+  px(ctx, C.ink, x + 30, y + 34, 36, 7); px(ctx, "#e8a030", x + 31, y + 35, 34, 5); pixelCircle(ctx, x + 36, y + 42, 2, C.white, C.ink); pixelCircle(ctx, x + 60, y + 42, 2, C.white, C.ink);
+  for (const wx of [6, 64]) { px(ctx, C.ink, x + wx, y + 56, 26, 36); px(ctx, C.glass, x + wx + 1, y + 57, 24, 34); px(ctx, C.glassLt, x + wx + 2, y + 58, 3, 10); }
+  glassDoor(ctx, x + 36, y + 76, 24, 36, B);
+} };
+OBJECT_TYPES.growShop3 = { w: 7, h: 7, solid: true, draw(ctx, x, y, o, t) {
+  const W = 112, H = 112, G = "#1e6a34";
+  px(ctx, C.ink, x, y, W, H); px(ctx, "#2a2c34", x + 1, y + 1, W - 2, H - 1);
+  const glow = 0.25 + 0.1 * Math.sin(t * 3);
+  ctx.globalAlpha = glow; px(ctx, NEON, x + 10, y + 6, W - 20, 36); ctx.globalAlpha = 1;
+  px(ctx, C.ink, x + 14, y + 10, W - 28, 28); px(ctx, "#101814", x + 15, y + 11, W - 30, 26);
+  drawText(ctx, "GROW SHOP", x + 56 - Math.round(textWidth("GROW SHOP") / 2), y + 14, NEON, NEONDK);
+  drawText(ctx, "STECKLINGE", x + 56 - Math.round(textWidth("STECKLINGE") / 2), y + 25, C.white, NEONDK);
+  pixelCircle(ctx, x + 56, y + 52, 8, NEON, C.ink); pixelCircle(ctx, x + 56, y + 52, 6, "#101814"); drawLeafIcon(ctx, x + 51, y + 47, NEON);
+  for (const wx of [6, 74]) {
+    px(ctx, C.ink, x + wx, y + 64, 32, 32); px(ctx, "#1a3a24", x + wx + 1, y + 65, 30, 30);
+    for (let i = 0; i < 2; i++) { const bx = x + wx + 4 + i * 13; px(ctx, C.leafDk, bx, y + 76, 10, 12); px(ctx, C.leaf, bx + 1, y + 74, 8, 9); px(ctx, "#303038", bx, y + 88, 10, 6); }
+  }
+  glassDoor(ctx, x + 44, y + 76, 24, 36, "#3a3c46", "#2a5a3a");
+} };
+OBJECT_TYPES.atm = { w: 1, h: 2, solid: true, draw(ctx, x, y) {
+  px(ctx, C.ink, x + 1, y + 2, 14, 30); px(ctx, "#2a50a8", x + 2, y + 3, 12, 28); px(ctx, "#4a70c8", x + 2, y + 3, 12, 2);
+  px(ctx, C.ink, x + 3, y + 7, 10, 7); px(ctx, "#86e0a0", x + 4, y + 8, 8, 5);
+  drawText(ctx, "€", x + 5, y + 16, C.white, null);
+  px(ctx, C.ink, x + 4, y + 25, 8, 2);
+} };
+
+/* ---------------------------- KARTE ---------------------------- */
+const WE_W = 50;
+const weRow = (c, from, to, base) => { const r = [...base]; for (let i = from; i <= to; i++) r[i] = c; return r.join(""); };
+const WE_TILES = [];
+for (let y = 0; y < 34; y++) {
+  let r = y <= 1 ? "G".repeat(WE_W) : y <= 3 ? "w".repeat(WE_W) : y === 4 ? "g".repeat(WE_W) : (y === 19 || y === 20) ? "r".repeat(WE_W) : y >= 31 ? "g".repeat(WE_W) : "p".repeat(WE_W);
+  if (y >= 23 && y <= 29) r = weRow("g", 22, 35, r);
+  if (y >= 5 && y <= 16) { r = weRow("g", 0, 0, r); r = weRow("g", 42, 49, r); }
+  WE_TILES.push(r);
+}
+const weDoor = (x, y, w, kind, hint, text) => ({ type: "trigger", x, y, w, h: 1, interact: text ? { kind: "dialog", face: "up", hint, text } : { kind, face: "up", hint } });
+MAPS.westend = {
+  name: "Westend",
+  tileset: "outdoor", bg: C.grass,
+  tiles: WE_TILES, collision: WE_TILES.map(r => [...r].map(c => "wkvhc".includes(c) ? "#" : ".").join("")),
+  spawns: {
+    fromJax: { x: 47, y: 19, dir: "left" },
+    fromApotheke: { x: 15, y: 17, dir: "down" }, fromGrow: { x: 13, y: 30, dir: "down" }, fromBar: { x: 37, y: 17, dir: "down" },
+  },
+  objects: [
+    // Bäume oben am Fluss
+    ...Array.from({ length: 25 }, (_, i) => ({ type: "pine", x: i * 2, y: 0 })), ...Array.from({ length: 24 }, (_, i) => ({ type: "pine", x: i * 2 + 1, y: 1 })),
+    // obere Reihe
+    { type: "highrise", x: 1, y: 6, heli: true }, weDoor(3, 16, 1, null, "Hochhaus", "HIGHRISE RESIDENCES\nPortier: Nur für Bewohner. Die Penthäuser sind leider alle vergeben."),
+    { type: "highrise", x: 7, y: 6 }, weDoor(9, 16, 1, null, "Hochhaus", "HIGHRISE RESIDENCES\nDie Klingelschilder sind voller Firmennamen. Niemand macht auf."),
+    { type: "pharmacy", x: 13, y: 10 }, weDoor(15, 16, 1, "weWarp_apotheke", "Apotheke"),
+    { type: "doener", x: 19, y: 11 }, weDoor(21, 16, 1, null, "Döner", "DÖNER WESTEND\n„Einmal mit alles?“ – Ein Zettel an der Tür: Heute nur Lieferservice."),
+    { type: "bizCenter", x: 24, y: 6 }, weDoor(27, 16, 2, null, "Business Center", "BUSINESS CENTER\nEmpfang: Termine nur nach Vereinbarung."),
+    { type: "bikerBar", x: 33, y: 10 }, weDoor(37, 16, 1, "weWarp_bar", "Haze Angels"),
+    { type: "motorbike", x: 42, y: 13, color: "#c82828" }, { type: "motorbike", x: 42, y: 15, color: "#202028" }, { type: "motorbike", x: 44, y: 14, color: "#3a64c0" },
+    { type: "lamp", x: 6, y: 17 }, { type: "lamp", x: 12, y: 17 }, { type: "lamp", x: 18, y: 17 }, { type: "lamp", x: 31, y: 17 }, { type: "lamp", x: 41, y: 17 },
+    { type: "tree", x: 45, y: 7 }, { type: "tree", x: 45, y: 10 }, { type: "pine", x: 48, y: 6 }, { type: "pine", x: 47, y: 9 },
+    // untere Reihe
+    { type: "skateShop", x: 2, y: 23 }, weDoor(5, 29, 1, null, "Skate Shop", "SKATE SHOP\nGeschlossen – „Bin skaten. Komme wieder.“"),
+    { type: "growShop3", x: 10, y: 23 }, weDoor(13, 29, 1, "weWarp_grow", "Grow Shop"),
+    { type: "atm", x: 19, y: 28, interact: { kind: "weAtm", face: "up", hint: "Geldautomat" } },
+    { type: "fountain", x: 27, y: 25 }, { type: "bench", x: 24, y: 24 }, { type: "bench", x: 33, y: 24 },
+    { type: "tree", x: 22, y: 28 }, { type: "tree", x: 34, y: 28 }, { type: "pine", x: 23, y: 23 }, { type: "pine", x: 35, y: 23 },
+    { type: "lamp", x: 9, y: 22 }, { type: "lamp", x: 18, y: 22 }, { type: "lamp", x: 37, y: 22 },
+    ...Array.from({ length: 12 }, (_, i) => ({ type: "pine", x: 38 + i, y: 25 + (i % 3) })),
+    ...Array.from({ length: 25 }, (_, i) => ({ type: "pine", x: i * 2, y: 32 })),
+    { type: "townSign", x: 44, y: 17, interact: { kind: "dialog", face: "up", hint: "Lesen", text: "Willkommen in WESTEND!\nLuxury · Business · Lifestyle" } },
+    // Ausgänge
+    { type: "trigger", x: 49, y: 19, w: 1, h: 2, interact: { kind: "warp", to: "jacksonville", spawn: "fromWestend", trigger: "touch", sound: "door" } },
+    { type: "exitSign", x: 46, y: 21, text: "Jacksonville →" },
+    { type: "barrier", x: 0, y: 19, interact: { kind: "dialog", face: "left", hint: "Ausgang West", text: "Hier geht es noch nicht weiter." } },
+    { type: "barrier", x: 0, y: 20, interact: { kind: "dialog", face: "left", hint: "Ausgang West", text: "Hier geht es noch nicht weiter." } },
+  ],
+  npcs: [],
+};
+// Jacksonville: Ausgang West öffnen
+MAPS.jacksonville.objects = MAPS.jacksonville.objects.filter(o => !(o.type === "barrier" && o.x === 5));
+MAPS.jacksonville.objects.push({ type: "trigger", x: 0, y: 19, w: 1, h: 2, interact: { kind: "warp", to: "westend", spawn: "fromJax", trigger: "touch", sound: "door" } });
+{ const s = MAPS.jacksonville.objects.find(o => o.type === "exitSign" && o.x === 7); if (s) s.text = "← Westend"; }
+MAPS.jacksonville.spawns.fromWestend = { x: 2, y: 19, dir: "right" };
+
+/* ---------------------------- INNENRÄUME ---------------------------- */
+function weRoom(id, name, w, h, floor, objects, npcs, back) {
+  const tiles = [];
+  for (let y = 0; y < h; y++) { let t = ""; for (let x = 0; x < w; x++) t += (y === 0 || x === 0 || x === w - 1) ? "T" : y === 1 ? "F" : y === h - 1 ? ((x === Math.floor(w / 2) - 1 || x === Math.floor(w / 2)) ? "e" : "T") : floor; tiles.push(t); }
+  const door = Math.floor(w / 2) - 1;
+  MAPS[id] = { name, tileset: "indoor", bg: C.black, tiles, collision: tiles.map(t => [...t].map(c => "TF".includes(c) ? "#" : ".").join("")),
+    spawns: { entrance: { x: door, y: h - 2, dir: "up" } },
+    objects: [...objects, { type: "trigger", x: door, y: h - 1, w: 2, h: 1, interact: { kind: "warp", to: "westend", spawn: back, trigger: "touch", sound: "door" } }],
+    npcs };
+}
+NPC_LOOKS.pharma = { r: "#e8ecea", R: "#c0c8c4", h: "#c8a060", H: "#e0c080", p: "#2e8a50", P: "#1a5a30" };
+NPC_LOOKS.kira = { r: "#1e6a34", R: "#124a24", h: "#e05078", H: "#f07898", p: "#2a2a30", P: "#18181c" };
+NPC_LOOKS.rex = { r: "#202020", R: "#101010", h: "#5a3a20", H: "#7a5a38", p: "#3a4a6a", P: "#283450" };
+NPC_LOOKS.angel = { r: "#3a2a20", R: "#241810", h: "#101010", H: "#2a2a2a", p: "#3a4a6a", P: "#283450" };
+weRoom("westend_apotheke", "Apotheke Westend", 12, 9, "q", [
+  { type: "cafeCounter", x: 4, y: 2 }, { type: "fileCabinet", x: 1, y: 2 }, { type: "fileCabinet", x: 2, y: 2 }, { type: "fileCabinet", x: 9, y: 2 }, { type: "fileCabinet", x: 10, y: 2 },
+  { type: "plant", x: 1, y: 7 }, { type: "plant", x: 10, y: 7 },
+], [{ id: "pharma", x: 6, y: 4, dir: "down", look: "pharma", talk: "pharma" }], "fromApotheke");
+weRoom("westend_grow", "Grow Shop Westend", 14, 10, "K", [
+  { type: "seedWall", x: 1, y: 1 }, { type: "seedWall", x: 9, y: 1 }, { type: "cafeCounter", x: 5, y: 3 },
+  { type: "hydroTable", x: 1, y: 6 }, { type: "hydroTable", x: 9, y: 6 }, { type: "plant", x: 12, y: 8 },
+], [{ id: "kira", x: 6, y: 5, dir: "down", look: "kira", talk: "kira" }], "fromGrow");
+weRoom("westend_bar", "Haze Angels · Bar", 16, 11, "o", [
+  { type: "cafeCounter", x: 2, y: 2 }, { type: "cafeCounter", x: 6, y: 2 }, { type: "drumKit", x: 12, y: 2 },
+  { type: "cafeTable", x: 2, y: 6 }, { type: "cafeTable", x: 11, y: 6 }, { type: "cafeTable", x: 6, y: 8 },
+  { type: "motorbike", x: 12, y: 8, color: "#c82828" },
+], [
+  { id: "rex", x: 7, y: 4, dir: "down", look: "rex", talk: "rex" },
+  { id: "angel1", x: 3, y: 5, dir: "right", look: "angel", text: "Bones: Du bist der Grower, von dem alle reden? Mal sehen, ob du hältst, was sie sagen." },
+  { id: "angel2", x: 13, y: 5, dir: "left", look: "angel", text: "Smokey: Westend gehört uns. Wer hier verkaufen will, kommt an uns nicht vorbei." },
+], "fromBar");
+for (const [k, map] of [["apotheke", "westend_apotheke"], ["grow", "westend_grow"], ["bar", "westend_bar"]])
+  CUSTOM_INTERACTIONS["weWarp_" + k] = () => { Sound.door(); transitionTo(map, "entrance"); };
+
+/* ---------------------------- APOTHEKE ---------------------------- */
+function pharmaToday() {
+  const d = gameDayNow();
+  if (!STATE.pharma || STATE.pharma.day !== d) STATE.pharma = { day: d, sold: {} };
+  return STATE.pharma;
+}
+TALKS.pharma = () => {
+  const p = pharmaToday(), list = medicalStacks();
+  const n = Object.keys(p.sold).length;
+  if (!list.length) { openDialog("Apothekerin Sommer: Guten Tag! Wir kaufen nur zertifizierte Medical-Ware aus lizenziertem Anbau – aus einem Gewächshaus.\nApothekerin Sommer: Pro Tag nehmen wir 5 Sorten à 500 g."); return; }
+  const items = list.map(e => {
+    const left = Math.max(0, WE_PHARMA_G - (p.sold[e.strain] || 0)), blocked = !p.sold[e.strain] && n >= WE_PHARMA_STRAINS;
+    return { label: "✚ " + STRAINS[e.strain].name, right: left ? `${fmtG(Math.min(left, Math.round(e.grams * 10) / 10))}` : "heute voll", e, left, disabled: !left || blocked || e.grams < 0.1 };
+  });
+  openMenu({
+    title: "APOTHEKE · MEDICAL", items, footer: () => `Heute: ${Object.keys(pharmaToday().sold).length}/${WE_PHARMA_STRAINS} Sorten · je ${WE_PHARMA_G} g`,
+    onChoose(it) {
+      const g = Math.round(Math.min(it.left, it.e.grams) * 10) / 10;
+      let left = g, pay = 0;
+      for (const b of STATE.buds.filter(b => b.owner === "medical" && b.strain === it.e.strain).sort((a, b) => b.quality - a.quality)) {
+        if (left <= 0.05) break;
+        const t = Math.round(Math.min(left, b.grams) * 10) / 10;
+        pay += takeFromList(STATE.buds, b, t).value; left = Math.round((left - t) * 10) / 10;
+      }
+      pay = Math.round(pay * 100) / 100;
+      p.sold[it.e.strain] = (p.sold[it.e.strain] || 0) + g;
+      bankAdd(pay); gainXP(Math.max(1, Math.round(g / 10))); saveGame(); closeAllMenus(); Sound.floor();
+      openDialog(`Du hast ${fmtG(g)} ${STRAINS[it.e.strain].name} (Medical) an die Apotheke verkauft.\nApothekerin Sommer: ${euro(pay)} sind überwiesen. Kontostand: ${euro(bank())}.`);
+    },
+  });
+};
+
+/* ---------------------------- GROW SHOP WESTEND ---------------------------- */
+const WE_BASE = () => STRAIN_LIST.filter(k => !STRAINS[k].custom);
+const WE_SEEDS_T2 = () => WE_BASE().filter(k => STRAINS[k].tier === 2).slice(0, 6);
+const WE_SEEDS_T3 = () => WE_BASE().filter(k => STRAINS[k].tier === 3).slice(0, 4);
+const WE_CLONES = () => [...WE_BASE().filter(k => STRAINS[k].tier === 1).slice(0, 2), ...WE_SEEDS_T2().slice(0, 2), ...WE_SEEDS_T3().slice(0, 2)];
+const WE_SEED_PRICE = { 2: 1500, 3: 5000 }, WE_CLONE_PRICE = { 1: 2000, 2: 6000, 3: 15000 };
+TALKS.kira = () => {
+  openDialog("Kira: Willkommen im Grow Shop Westend! Wir sind auf Stecklinge und besondere Samen spezialisiert.\nKira: Tier-2- und Tier-3-Samen, feminisiert – und bewurzelte Stecklinge im 5er-Pack.", ["Samen Tier 2", "Samen Tier 3", "Stecklinge (5er)", "Tschüss"], c => {
+    if (c === 0 || c === 1) weSeedMenu(c === 0 ? 2 : 3);
+    else if (c === 2) weCloneMenu();
+  });
+};
+function weSeedMenu(tier) {
+  const list = tier === 2 ? WE_SEEDS_T2() : WE_SEEDS_T3(), price = WE_SEED_PRICE[tier];
+  openMenu({
+    title: `SAMEN TIER ${tier} · ${euro(price)}`, footer: () => "Bar: " + euro(STATE.money),
+    items: list.map(k => ({ label: STRAINS[k].name + " ♀", right: euro(price), k, color: RARITIES[STRAINS[k].rarity].color })),
+    onChoose(it) {
+      openMenu({ title: "WIE VIELE?", items: [1, 5, 10].map(n => ({ label: `${n} Stück`, right: euro(price * n), n, disabled: STATE.money < price * n })), footer: () => "Bar: " + euro(STATE.money),
+        onChoose(q) {
+          if (STATE.money < price * q.n) { Sound.bump(); return; }
+          STATE.money -= price * q.n; invAdd("seed_" + it.k + "_f", q.n); saveGame(); Sound.floor(); closeAllMenus();
+          openDialog(`Du hast ${q.n}× ${STRAINS[it.k].name}-Samen (feminisiert) für ${euro(price * q.n)} gekauft.`);
+        } });
+    },
+  });
+}
+function weCloneMenu() {
+  openMenu({
+    title: "STECKLINGE · 5ER-PACK", footer: () => `Bar: ${euro(STATE.money)} · Tasche ${cloneBag().clones.length}/${CLONE_CARRY}`,
+    items: WE_CLONES().map(k => ({ label: STRAINS[k].name, right: euro(WE_CLONE_PRICE[STRAINS[k].tier]), k, color: RARITIES[STRAINS[k].rarity].color })),
+    onChoose(it) {
+      const price = WE_CLONE_PRICE[STRAINS[it.k].tier];
+      if (cloneBag().clones.length > 0) { openDialog(`Kira: Ein 5er-Pack passt nur in eine leere Stecklings-Tasche – du trägst schon ${cloneBag().clones.length}. Setz die erst ein.`); return; }
+      if (STATE.money < price) { Sound.bump(); openDialog(`Kira: Das kostet ${euro(price)} bar.`); return; }
+      STATE.money -= price;
+      const line = newLine(it.k);
+      for (let i = 0; i < 5; i++) cloneBag().clones.push({ strain: it.k, line, sex: "f", reg: false, cutAt: freshCutAt() });
+      discover(it.k); saveGame(); Sound.floor(); closeAllMenus();
+      openDialog(`Du hast 5 Stecklinge ${STRAINS[it.k].name} (${lineName(line)}) für ${euro(price)} gekauft.\nSie sind in deiner Tasche – einsetzen im Stecklingszelt oder direkt einpflanzen.`);
+    },
+  });
+}
+
+/* ---------------------------- GELDAUTOMAT ---------------------------- */
+function atmToday() { const d = gameDayNow(); if (!STATE.atm || STATE.atm.day !== d) STATE.atm = { day: d, out: 0, in: 0 }; return STATE.atm; }
+CUSTOM_INTERACTIONS.weAtm = () => {
+  Sound.select();
+  const a = atmToday();
+  openMenu({
+    title: "GELDAUTOMAT", footer: moneyLine,
+    items: [
+      { label: "Abheben (Konto → Bar)", right: `noch ${euro(WE_ATM_OUT - a.out)}`, id: "out", disabled: a.out >= WE_ATM_OUT || bank() < 1 },
+      { label: "Einzahlen (Bar → Konto)", right: `noch ${euro(WE_ATM_IN - a.in)}`, id: "in", disabled: a.in >= WE_ATM_IN || STATE.money < 1 },
+    ],
+    onChoose(it) {
+      const out = it.id === "out", max = Math.floor(Math.min(out ? WE_ATM_OUT - a.out : WE_ATM_IN - a.in, out ? bank() : STATE.money));
+      const vals = (out ? [500, 1000, 2500, 5000] : [100, 500, 1000]).filter(v => v < max);
+      openMenu({ title: out ? "ABHEBEN" : "EINZAHLEN", footer: moneyLine, items: [...vals.map(v => ({ label: euro(v), v })), { label: `Maximal (${euro(max)})`, v: max }],
+        onChoose(q) {
+          if (q.v < 1) { Sound.bump(); return; }
+          if (out) { bankAdd(-q.v); STATE.money += q.v; a.out += q.v; } else { STATE.money -= q.v; bankAdd(q.v); a.in += q.v; }
+          saveGame(); Sound.floor(); closeAllMenus();
+          openDialog(`${out ? "Abgehoben" : "Eingezahlt"}: ${euro(q.v)}.\n${moneyLine()}` + (!out ? "\n(Mehr als 2.000 € am Tag würde auffallen.)" : ""));
+        } });
+    },
+  });
+};
+
+/* ---------------------------- HAZE ANGELS ---------------------------- */
+QUESTS.angels = {
+  title: "Die Haze Angels",
+  steps: [
+    `Rex will einen Beweis: Bring den Haze Angels ${fmtKg(ANGELS_EPIC_G)} epische Blüten (oder besser) in ihre Bar in Westend.`,
+    `Erledigt! Die Haze Angels sind jetzt deine Läufer in Westend – sie nehmen ab ${fmtKg(10000)} auf einmal.`,
+  ],
+};
+MAIN_QUESTS.push("angels");
+if (typeof QUEST_CHAPTERS !== "undefined") QUEST_CHAPTERS.push({ title: "Kapitel 6: Westend", quests: ["angels"] });
+if (typeof QUEST_WHERE !== "undefined") QUEST_WHERE.angels = "Haze-Angels-Bar, Westend (westlich von Jacksonville)";
+RUNNERS.angels = { name: "Haze Angels", areas: ["westend"], min: 10000, max: 0, active: () => questStep("angels") >= 1, stock: "angelsStock", pay: "angelsPay",
+  emptyText: `Rex: Ware ist weg. Komm in die Bar, hol dein Geld und bring Nachschub – ab ${fmtKg(10000)}.` };
+const epicFits = b => !b.owner && b.rarity >= 3;
+TALKS.rex = () => {
+  const st = questStep("angels");
+  if (st < 0) {
+    openDialog("Rex: Halt. Wer bist du denn? … Ah, der Grower aus Jacksonville.\nRex: Westend ist unser Revier. Hier läuft nichts ohne die Haze Angels.\n" +
+      `Rex: Du willst hier verkaufen? Dann beweis erst, was du drauf hast: ${fmtKg(ANGELS_EPIC_G)} episches Zeug. Nicht weniger.\nRex: Bring's her, dann reden wir übers Geschäft. Wir zahlen den normalen Preis.`,
+      null, () => setQuest("angels", 0));
+    return;
+  }
+  if (st === 0) {
+    const got = STATE.angelsEpic || 0, need = Math.round((ANGELS_EPIC_G - got) * 10) / 10, have = sumG(STATE.buds.filter(epicFits));
+    if (have < 0.1) { openDialog(`Rex: Noch ${fmtKg(need)} episches Zeug fehlen. Komm wieder, wenn du was hast.`); return; }
+    const g = Math.round(Math.min(need, have) * 10) / 10;
+    openDialog(`Rex: Zeig her. … ${fmtG(Math.round(have * 10) / 10)} Episches. Mir fehlen noch ${fmtKg(need)}.`, [`${fmtG(g)} abgeben`, "Später"], c => {
+      if (c !== 0) return;
+      let left = g, pay = 0;
+      for (const b of STATE.buds.filter(epicFits).sort((a, b) => a.rarity - b.rarity || a.value / a.grams - b.value / b.grams)) {
+        if (left <= 0.05) break;
+        const t = Math.round(Math.min(left, b.grams) * 10) / 10;
+        pay += takeFromList(STATE.buds, b, t).value; left = Math.round((left - t) * 10) / 10;
+      }
+      pay = Math.round(pay * 100) / 100;
+      STATE.angelsEpic = Math.round(((STATE.angelsEpic || 0) + g) * 10) / 10;
+      STATE.money += pay; gainXP(Math.round(g / 10)); saveGame(); Sound.floor();
+      if (STATE.angelsEpic + 0.05 >= ANGELS_EPIC_G) {
+        setQuest("angels", 1);
+        openDialog(`Du hast ${fmtG(g)} abgegeben und ${euro(pay)} bekommen.\nRex: Respekt. Das ist Qualität.\nRex: Ab jetzt laufen wir für dich in Westend. Gib uns Ware – ab ${fmtKg(10000)} – und wir beliefern deine Kunden hier. 20 % für uns, den Rest holst du bei mir ab.`);
+      } else openDialog(`Du hast ${fmtG(g)} abgegeben und ${euro(pay)} bekommen.\nRex: Gut. Noch ${fmtKg(Math.round((ANGELS_EPIC_G - STATE.angelsEpic) * 10) / 10)}.`);
+    });
+    return;
+  }
+  runnerMenu("angels",
+    `Rex: Gib uns Ware – ab ${fmtKg(10000)}. Wir beliefern alle deine Kunden in Westend. 20 % für uns, den Rest holst du hier ab.`,
+    g => `Rex: Wir haben noch ${fmtG(Math.round(g * 10) / 10)} von dir. Läuft.`);
+};
+
+/* ---------------------------- STRASSENKUNDEN WESTEND ---------------------------- */
+Object.assign(STREET_SPOTS, {
+  wPharma: { map: "westend", x: 16, y: 17, dir: "down", text: "vor der Apotheke in Westend", zone: "westend" },
+  wDoener: { map: "westend", x: 20, y: 17, dir: "down", text: "vor dem Dönerladen in Westend", zone: "westend" },
+  wBiz:    { map: "westend", x: 29, y: 17, dir: "down", text: "vor dem Business Center in Westend", zone: "westend" },
+  wTower:  { map: "westend", x: 7, y: 18, dir: "down", text: "vor den Hochhäusern in Westend", zone: "westend" },
+  wSkate:  { map: "westend", x: 7, y: 30, dir: "up", text: "vor dem Skate Shop in Westend", zone: "westend" },
+  wPark:   { map: "westend", x: 30, y: 27, dir: "left", text: "im Park in Westend", zone: "westend" },
+  wAtm:    { map: "westend", x: 20, y: 30, dir: "left", text: "am Geldautomaten in Westend", zone: "westend" },
+  wGrow:   { map: "westend", x: 16, y: 30, dir: "up", text: "vor dem Grow Shop in Westend", zone: "westend" },
+});
+const WE_PEOPLE = [
+  { id: "jamal",   name: "Jamal",   start: "wSkate",  zone: "westend", look: { r: "#e8a030", R: "#c07818", h: "#101014", H: "#2a2a30", s: "#a87048", S: "#885830" }, hello: "Yo, Jamal. Ich bin jeden Tag am Skate Shop – mit was Gutem flieg ich höher." },
+  { id: "vivien",  name: "Vivien",  start: "wTower",  zone: "westend", long: true, look: { r: "#c8a048", R: "#a08030", h: "#f0e0a0", H: "#fff0c0" }, hello: "Vivien. Ich wohne oben im Penthouse. Ich zahle gut – aber nur für Qualität." },
+  { id: "marek",   name: "Marek",   start: "wBiz",    zone: "westend", look: { r: "#34405c", R: "#242c40", h: "#5a4028", H: "#7a5a38" }, hello: "Marek, Business Center. Nach 14 Stunden Meetings brauch ich Entspannung." },
+  { id: "chantal", name: "Chantal", start: "wDoener", zone: "westend", long: true, look: { r: "#e070a0", R: "#b05080", h: "#e8c060", H: "#f8e090" }, hello: "Hi, Chantal! Ich arbeite im Dönerladen. Die Kunden hier sind manchmal anstrengend …" },
+  { id: "dario",   name: "Dario",   start: "wPark",   zone: "westend", look: { r: "#48a060", R: "#307040", h: "#2a1a14", H: "#4a3024" }, hello: "Dario. Ich chill meistens im Park. Hast du was für mich?" },
+  { id: "lucy",    name: "Lucy",    start: "wAtm",    zone: "westend", long: true, look: { r: "#9a58b8", R: "#6e3a8a", h: "#a03a20", H: "#c85a38" }, hello: "Lucy. Ich steh oft am Automaten – Geld abheben, du weißt schon wofür." },
+];
+for (const p of WE_PEOPLE) {
+  STREET_PEOPLE.push(p); STREET_BY_ID[p.id] = p;
+  const pal = { ...SPRITE_PAL, ...p.look };
+  const mk = (art, flip, fn) => ({ body: artToCanvas(fn ? fn(art.body) : art.body, pal, flip), legs: (art.legs || PLAYER_ART.down.legs).map(l => artToCanvas(l, pal, flip)) });
+  NPC_SPRITES["street_" + p.id] = p.long
+    ? { down: mk(PLAYER_ART.down, false, withLongHair), up: mk(PLAYER_ART.up, false, withLongHair), right: mk(PLAYER_ART.right, false, withLongHairSide), left: mk(PLAYER_ART.right, true, withLongHairSide) }
+    : { down: mk(PLAYER_ART.down, false), up: mk(PLAYER_ART.up, false), right: mk(PLAYER_ART.right, false), left: mk(PLAYER_ART.right, true) };
+  TALKS["street_" + p.id] = () => talkStreet(p);
+}
+/* =====================================================================
+   51. BERG-PLANTAGEN (Osten) – Outdoor-Anbau
+   ---------------------------------------------------------------------
+   Mit dem Bus ab der Haltestelle in Jacksonville (Ticket 20 € bar, die
+   Rückfahrt ist im Ticket drin) in die Berge.
+   3 Outdoor-Felder à 100 Plätze (10 Reihen à 10), je 300.000 € (Karte),
+   direkt am Feld-Tor kaufen. Kein Gießen (Regen), keine Lampe (Sonne):
+   Pflanzen wachsen 50 % langsamer, Ertrag +50 %. Bepflanzen mit Samen oder
+   Stecklingen; Stecklingszelt, Samenschrank, Erntekiste und ein Anbauer
+   wie im Grow-Raum. Felder zählen nicht zur Wohnungs-Grenze.
+   Die Hütte (Hasch-Presse) kommt später.
+   ===================================================================== */
+const BUS_PRICE = 20, FIELD_PRICE = 300000;
+const FIELDS = ["feld1", "feld2", "feld3"];
+ITEMS.sun_outdoor = { cat: "addon", slot: "lamp", name: "Sonne", price: 0, q: 0, speed: 0.5, yieldM: 1.5, desc: "Outdoor: Sonne statt Lampe – langsamer, aber viel Ertrag." };
+TILESETS.outdoor.Q = (ctx, x, y, tx, ty) => {                      // Ackerboden mit Furchen
+  px(ctx, "#7a5432", x, y, 16, 16);
+  for (let r = 0; r < 4; r++) { px(ctx, "#5e3e22", x, y + r * 4 + 3, 16, 1); px(ctx, "#94683e", x, y + r * 4, 16, 1); }
+  const h = hash(tx, ty); px(ctx, "#a07448", x + h % 13, y + (h >> 4) % 13, 2, 1);
+};
+OBJECT_TYPES.fieldRow = {
+  w: 10, h: 1, solid: true,
+  draw(ctx, x, y, o, t) {
+    const row = o.tent;
+    for (let c = 0; c < row.plants.length; c++) {
+      const pl = row.plants[c], px0 = x + c * 16;
+      px(ctx, "#5e3e22", px0 + 2, y + 11, 12, 4);
+      if (!pl) continue;
+      const st = plantStage(pl), cx = px0 + 8, cy = y + 4, sway = Math.round(Math.sin(t * 1.5 + c + o.tent.row) * 0.5);
+      if (st <= 1) { px(ctx, C.leaf, cx - 1, y + 7, 2, 4); px(ctx, C.leafLt, cx - 2, y + 6, 4, 1); continue; }
+      const r = st === 2 ? 3 : st === 3 ? 5 : 6;
+      pixelCircle(ctx, cx + sway, cy + (6 - r) / 2, r, C.leaf, C.ink);
+      for (let k = 0; k < 8; k++) drawLine(ctx, k % 2 ? C.leafDk : C.leafLt, cx + sway, cy, k * Math.PI / 4, r);
+      if (st >= 4 && !isPollenPlant(pl)) {
+        const bc = STRAINS[pl.strain].color;
+        for (const [bx, by] of [[0, 0], [-3, -2], [3, 1], [-2, 3], [2, -3]]) { px(ctx, C.ink, cx + bx + sway - 1, cy + by - 1, 3, 3); px(ctx, bc, cx + bx + sway, cy + by, 1, 1); }
+      } else if (st >= 4) for (const [bx, by] of [[-2, -1], [2, 1], [0, 3]]) px(ctx, "#c8d890", cx + bx + sway, cy + by, 2, 2);
+    }
+  },
+};
+OBJECT_TYPES.fieldGate = { w: 2, h: 1, solid: true, draw(ctx, x, y, o) {
+  px(ctx, C.ink, x + 1, y + 2, 2, 14); px(ctx, C.ink, x + 29, y + 2, 2, 14);
+  for (const yy of [5, 10]) { px(ctx, C.ink, x + 3, y + yy, 26, 3); px(ctx, C.wood, x + 3, y + yy + 1, 26, 1); }
+  const sold = o.field && owns(o.field);
+  const lw = textWidth(o.label || "") + 6;
+  px(ctx, C.ink, x + 16 - lw / 2, y - 10, lw, 12); px(ctx, sold ? "#2e7a48" : "#c8a048", x + 17 - lw / 2, y - 9, lw - 2, 10);
+  drawText(ctx, o.label || "", x + 16 - Math.round(textWidth(o.label || "") / 2), y - 8, C.white, null);
+} };
+OBJECT_TYPES.fence = { w: 1, h: 1, solid: true, draw(ctx, x, y) {
+  px(ctx, C.ink, x + 7, y + 3, 2, 12); px(ctx, C.ink, x, y + 6, 16, 3); px(ctx, C.wood, x, y + 7, 16, 1);
+} };
+OBJECT_TYPES.hut = { w: 3, h: 3, solid: true, draw(ctx, x, y) {
+  px(ctx, C.ink, x + 2, y + 2, 44, 18); px(ctx, "#4a3a34", x + 3, y + 3, 42, 16);
+  for (let i = 0; i < 6; i++) px(ctx, "#3a2a24", x + 3, y + 5 + i * 3, 42, 1);
+  px(ctx, C.ink, x + 4, y + 20, 40, 28); px(ctx, C.wood, x + 5, y + 21, 38, 27);
+  for (let i = 0; i < 5; i++) px(ctx, C.woodDk, x + 5, y + 24 + i * 5, 38, 1);
+  px(ctx, C.ink, x + 18, y + 30, 12, 18); px(ctx, C.woodDk, x + 19, y + 31, 10, 17);
+  px(ctx, C.ink, x + 7, y + 26, 8, 8); px(ctx, C.warm, x + 8, y + 27, 6, 6);
+} };
+
+/* ---------------------------- KARTE: BERGE ---------------------------- */
+const BG_W = 40, BG_H = 30;
+const BG_TILES = [];
+for (let y = 0; y < BG_H; y++) {
+  const r = [..."G".repeat(BG_W)];
+  for (let x = 4; x < 35; x++) r[x] = "g";
+  r[2] = "r"; r[3] = "r";                                         // Straße
+  for (let x = 36; x < 38; x++) r[x] = "w";                       // Bergbach
+  if (y >= 4 && y <= 11) { for (let x = 8; x <= 17; x++) r[x] = "Q"; for (let x = 22; x <= 31; x++) r[x] = "Q"; }
+  if (y >= 16 && y <= 22) for (let x = 22; x <= 31; x++) r[x] = "Q";
+  if (y === 13) for (let x = 4; x <= 31; x++) r[x] = "p";
+  if (y === 26) for (let x = 4; x <= 30; x++) r[x] = "p";
+  if (y >= 13 && y <= 26) r[19] = "p";
+  if (y === 24 || y === 25) r[26] = "p";
+  BG_TILES.push(r.join(""));
+}
+const gateFor = (f, x, y, label) => ({ type: "fieldGate", x, y, field: f, label, interact: { kind: "fieldGate_" + f, face: y === 23 ? "up" : "up", hint: label } });
+MAPS.berge = {
+  name: "Berg-Plantagen",
+  tileset: "outdoor", bg: C.grass,
+  tiles: BG_TILES, collision: BG_TILES.map(r => [...r].map(c => "wkvhc".includes(c) ? "#" : ".").join("")),
+  spawns: { fromBus: { x: 4, y: 27, dir: "right" }, from_feld1: { x: 12, y: 13, dir: "down" }, from_feld2: { x: 26, y: 13, dir: "down" }, from_feld3: { x: 26, y: 24, dir: "down" } },
+  objects: [
+    { type: "busStop", x: 4, y: 28, interact: { kind: "busBack", face: "down", hint: "Bus" } },
+    { type: "townSign", x: 5, y: 2, interact: { kind: "dialog", face: "up", hint: "Lesen", text: "BERG-PLANTAGEN\nOutdoor · Hasch · 100 % Natur" } },
+    // Zäune um die Felder
+    ...[[7, 3, 18, 12], [21, 3, 32, 12], [21, 15, 32, 23]].flatMap(([x0, y0, x1, y1]) => {
+      const out = [];
+      for (let x = x0; x <= x1; x++) { out.push({ type: "fence", x, y: y0 }); }
+      for (let y = y0 + 1; y < y1; y++) { out.push({ type: "fence", x: x0, y }); out.push({ type: "fence", x: x1, y }); }
+      return out;
+    }),
+    // untere Zaunreihen mit Toren
+    ...[7, 8, 9, 10, 11, 14, 15, 16, 17, 18].map(x => ({ type: "fence", x, y: 12 })), gateFor("feld1", 12, 12, "FELD 1"),
+    ...[21, 22, 23, 24, 25, 28, 29, 30, 31, 32].map(x => ({ type: "fence", x, y: 12 })), gateFor("feld2", 26, 12, "FELD 2"),
+    ...[21, 22, 23, 24, 25, 28, 29, 30, 31, 32].map(x => ({ type: "fence", x, y: 23 })), gateFor("feld3", 26, 23, "FELD 3"),
+    { type: "hut", x: 9, y: 17, interact: { kind: "dialog", face: "up", hint: "Hütte", text: "Eine alte Holzhütte. Drinnen steht eine verstaubte Hasch-Presse.\n(Kommt später.)" } },
+    ...Array.from({ length: 14 }, (_, i) => ({ type: "pine", x: 4 + i * 2 + (i % 2), y: 0 })), ...Array.from({ length: 12 }, (_, i) => ({ type: "pine", x: 5 + i * 2, y: 28 + (i % 2) })),
+    { type: "pine", x: 33, y: 5 }, { type: "pine", x: 34, y: 9 }, { type: "pine", x: 33, y: 14 }, { type: "pine", x: 34, y: 19 }, { type: "pine", x: 33, y: 24 },
+    { type: "pine", x: 5, y: 7 }, { type: "pine", x: 5, y: 16 }, { type: "pine", x: 14, y: 22 }, { type: "pine", x: 16, y: 16 },
+  ],
+  npcs: [],
+};
+for (const f of FIELDS) CUSTOM_INTERACTIONS["fieldGate_" + f] = () => fieldGate(f);
+// Bus: Jacksonville ↔ Berge
+{ const b = MAPS.jacksonville.objects.find(o => o.type === "busStop"); if (b) b.interact = { kind: "busRide", face: "up", hint: "Bus" }; }
+MAPS.jacksonville.spawns.fromBus = { x: 16, y: 35, dir: "down" };
+CUSTOM_INTERACTIONS.busRide = () => {
+  Sound.select();
+  openDialog(`Bushaltestelle Jacksonville.\nLinie 7: Berg-Plantagen (Osten). Ticket ${euro(BUS_PRICE)} bar – Rückfahrt inklusive.`, [`Einsteigen (${euro(BUS_PRICE)})`, "Nein"], c => {
+    if (c !== 0) return;
+    if (STATE.money < BUS_PRICE) { Sound.bump(); openDialog("Busfahrer: Kein Ticket, keine Fahrt."); return; }
+    STATE.money -= BUS_PRICE; STATE.busReturn = true; saveGame(); Sound.door();
+    transitionTo("berge", "fromBus", { hold: 0.8, after: () => think("Du denkst: Frische Bergluft … Hier oben kann man draußen anbauen.") });
+  });
+};
+CUSTOM_INTERACTIONS.busBack = () => {
+  Sound.select();
+  openDialog("Bushaltestelle Berg-Plantagen.\nLinie 7 zurück nach Jacksonville.", ["Einsteigen", "Nein"], c => {
+    if (c !== 0) return;
+    STATE.busReturn = false; saveGame(); Sound.door();
+    transitionTo("jacksonville", "fromBus", { hold: 0.8 });
+  });
+};
+
+/* ---------------------------- FELDER ---------------------------- */
+const FIELD_W = 16, FIELD_H = 24;
+const FIELD_TILES = [];
+for (let y = 0; y < FIELD_H; y++) {
+  const r = [..."g".repeat(FIELD_W)];
+  r[0] = "G"; r[FIELD_W - 1] = "G";
+  if (y <= 1) r.fill("G");
+  if (y >= 3 && y <= 21) for (let x = 2; x <= 11; x++) r[x] = "Q";
+  if (y >= 2) r[12] = "p";
+  if (y >= 22) for (let x = 1; x < FIELD_W - 1; x++) r[x] = "p";
+  FIELD_TILES.push(r.join(""));
+}
+FIELDS.forEach((f, i) => {
+  PROPERTIES[f] = {
+    name: `Feld ${i + 1}`, place: "Berg-Plantagen", qm: 2000, price: FIELD_PRICE, maps: [f], entrance: [f, "entrance"],
+    growrooms: [{ map: f, label: "Feld (100 Pflanzen)" }], license: true, noLimit: true, field: true,   // license = fertig eingerichtet, kein Ausbau
+    info: "Outdoor-Feld in den Bergen: 10 Reihen à 10 Plätze. Kein Gießen, Sonne statt Lampe.",
+  };
+  MAPS[f] = {
+    name: `Berg-Plantagen · Feld ${i + 1}`, tileset: "outdoor", bg: C.grass,
+    tiles: FIELD_TILES, collision: FIELD_TILES.map(r => [...r].map(c => "wkvhc".includes(c) ? "#" : ".").join("")),
+    spawns: { entrance: { x: 7, y: 22, dir: "up" } },
+    objects: [
+      ...Array.from({ length: 8 }, (_, k) => ({ type: "pine", x: k * 2, y: 0 })),
+      { type: "seedCabinet", x: 13, y: 2, interact: { kind: "seedStash", face: "up", hint: "Samenschrank" } },
+      { type: "harvestCrate", x: 14, y: 7, interact: { kind: "harvestCrate", face: "right", hint: "Erntekiste" } },
+      { type: "sign", x: 14, y: 21, interact: { kind: "dialog", hint: "Lesen", text: `FELD ${i + 1} – Outdoor.\nKein Gießen nötig (Regen). Sonne statt Lampe: 50 % langsamer, 50 % mehr Ertrag.` } },
+      { type: "trigger", x: 1, y: 23, w: FIELD_W - 2, h: 1, interact: { kind: "warp", to: "berge", spawn: "from_" + f, trigger: "touch", sound: "door" } },
+    ],
+    npcs: [],
+    arrange: objects => {
+      const out = objects.slice();
+      for (const tent of STATE.tents) {
+        if (tent.home !== f) continue;
+        if (isCloneTent(tent)) out.push({ type: "growTent", x: tent.x, y: tent.y, w: 2, h: 2, tent, interact: { kind: "tent", hint: "Stecklingszelt öffnen" } });
+        else out.push({ type: "fieldRow", x: tent.x, y: tent.y, w: 10, h: 1, tent, interact: { kind: "tent", hint: `Reihe ${tent.row + 1} öffnen` } });
+      }
+      return out;
+    },
+  };
+  GROWROOM_MAPS.push(f);
+  for (const id of Object.keys(STAFF))
+    MAPS[f].npcs.push({ id: "staff_" + id + "_" + f, x: 14, y: 8, dir: "left", look: "staff_" + id, talk: "staff_" + id, condition: () => !!(staffSt(id) && staffSt(id).room === f) });
+});
+function buildField(f) {
+  props().built[f] = true;
+  for (let i = 0; i < 10; i++) STATE.tents.push({
+    id: STATE.nextTentId++, item: "install_row", install: true, home: f, row: i, x: 2, y: 3 + i * 2,
+    title: `${PROPERTIES[f].name} · Reihe ${i + 1}`, addons: { lamp: "sun_outdoor", water: "auto_water" }, plants: new Array(10).fill(null),
+  });
+  ensureGrowroomExtras(f);
+  saveGame();
+}
+const _updateBG = update;
+update = function (dt) {
+  _updateBG(dt);
+  if (STATE && STATE.props) for (const f of FIELDS) if (owns(f) && !isBuilt(f)) { buildField(f); for (const k in MAP_CACHE) delete MAP_CACHE[k]; }
+};
+function fieldGate(f) {
+  const P = PROPERTIES[f];
+  if (owns(f)) { Sound.door(); transitionTo(f, "entrance"); return; }
+  Sound.select();
+  openDialog(`${P.name} – Outdoor, 100 Plätze (10 Reihen à 10).\nKein Gießen, Sonne statt Lampe: wächst 50 % langsamer, dafür 50 % mehr Ertrag.\nZu verkaufen: ${euro(FIELD_PRICE)} (Karte). Kontostand: ${euro(bank())}.`, [`Kaufen (${euro(FIELD_PRICE)})`, "Nein"], c => {
+    if (c !== 0) return;
+    if (bank() < FIELD_PRICE) { Sound.bump(); openDialog(`Auf deinem Konto ist nicht genug sauberes Geld (${euro(bank())}).`); return; }
+    bankAdd(-FIELD_PRICE); props().owned.push(f); buildField(f); saveGame(); Sound.floor();
+    for (const k in MAP_CACHE) delete MAP_CACHE[k]; GAME.map = getMap(GAME.mapId);
+    openDialog(`${P.name} gehört jetzt dir! Die Reihen sind angelegt – Samen oder Stecklinge rein und los.`);
+  });
+}
+// Felder (und alles andere in PROPERTIES) zählen als eigene Räume
+propOfMap = function (mapId) { return Object.keys(PROPERTIES).find(id => PROPERTIES[id].maps.includes(mapId)) || null; };
 
 /* ---------------------------------------------------------------------
    START
